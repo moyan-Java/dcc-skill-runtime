@@ -10,9 +10,10 @@ import yaml
 
 from dcc_skill_runtime.catalog import SkillCatalog, SkillCatalogError
 from dcc_skill_runtime.knowledge import KnowledgeIndex
-from dcc_skill_runtime.models import HostCallResponse
+from dcc_skill_runtime.models import HostCallRequest, HostCallResponse
 from dcc_skill_runtime.runtime import SkillRuntime, SkillRuntimeError
-from dcc_skill_runtime.security import SkillSecurityError, SkillSignature
+from dcc_skill_runtime.security import SkillSecurityError, SkillSignature, SkillSigner
+from dcc_skill_runtime.transport import HostWebSocketClient
 from dcc_skill_runtime.session import SessionError, SessionStore
 
 
@@ -141,6 +142,60 @@ class RuntimeTests(unittest.TestCase):
 
             with self.assertRaises(SkillRuntimeError):
                 runtime.run(session.session_id, "maya.scene.plan", "maya-001", {})
+
+    def test_signer_generates_package_signature(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            package_root, _ = _create_signed_skill(base)
+            private_key = base / "private.key"
+            trust_config = base / "trust.json"
+            SkillSigner.generate_key_pair(private_key, trust_config, "dev")
+            signature_path = SkillSigner.sign_package(package_root, private_key, "dev")
+
+            trusted = SkillSignature.load_trusted_keys(trust_config)
+            catalog = SkillCatalog(package_root.parent, trusted)
+            catalog.refresh()
+            self.assertTrue(signature_path.is_file())
+            self.assertEqual(catalog.load("maya.scene.plan").manifest.skill_id, "maya.scene.plan")
+
+    def test_transport_unwraps_nested_host_call_result(self):
+        class Socket:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def send(self, _message):
+                return None
+
+            def recv(self, timeout=None):
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "action": "host.call",
+                        "request_id": "run-1",
+                        "result": {
+                            "status": "success",
+                            "action": "skill.run",
+                            "result": {"created": 2},
+                        },
+                    }
+                )
+
+        client = HostWebSocketClient(
+            "ws://127.0.0.1:8890",
+            connection_factory=lambda *_args, **_kwargs: Socket(),
+        )
+        response = client.call_skill(
+            HostCallRequest(
+                host_id="maya-001",
+                skill_id="maya.scene.plan",
+                entry="run",
+                run_id="run-1",
+            )
+        )
+        self.assertEqual(response.result, {"created": 2})
 
 
 def _create_signed_skill(base: Path, mutates_scene: bool = False):

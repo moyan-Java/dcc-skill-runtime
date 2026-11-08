@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Mapping
 
+import yaml
+
 
 class SkillSecurityError(ValueError):
     """Skill 包不可信或内容被篡改。"""
@@ -108,6 +110,80 @@ class SkillSignature:
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
+
+
+class SkillSigner:
+    """开发阶段生成密钥并为 Skill 包生成签名。"""
+
+    @staticmethod
+    def generate_key_pair(private_key_path: Path, trust_config_path: Path, key_id: str) -> None:
+        """生成 Ed25519 私钥和 Runtime 信任配置。"""
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        private_key = Ed25519PrivateKey.generate()
+        private_key_path = Path(private_key_path)
+        trust_config_path = Path(trust_config_path)
+        private_key_path.parent.mkdir(parents=True, exist_ok=True)
+        trust_config_path.parent.mkdir(parents=True, exist_ok=True)
+        private_key_path.write_text(
+            base64.b64encode(private_key.private_bytes_raw()).decode("ascii"),
+            encoding="ascii",
+        )
+        public_key = base64.b64encode(private_key.public_key().public_bytes_raw()).decode("ascii")
+        trust_config_path.write_text(
+            json.dumps({"keys": {key_id: public_key}}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def sign_package(package_root: Path, private_key_path: Path, key_id: str) -> Path:
+        """签名清单、代码和引用文件，返回 signature.json 路径。"""
+
+        package_root = Path(package_root).resolve()
+        try:
+            manifest_data = yaml.safe_load((package_root / "skill.yaml").read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as exc:
+            raise SkillSecurityError("无法读取 Skill manifest") from exc
+        if not isinstance(manifest_data, dict):
+            raise SkillSecurityError("Skill manifest 必须是对象")
+
+        files = {}
+        for path in sorted(package_root.rglob("*")):
+            if not path.is_file() or path.name == "signature.json":
+                continue
+            relative = path.relative_to(package_root).as_posix()
+            files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+        try:
+            private_bytes = base64.b64decode(
+                Path(private_key_path).read_text(encoding="ascii"),
+                validate=True,
+            )
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+            private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+            signature = private_key.sign(
+                SkillSignature._canonical_payload(manifest_data, dict(sorted(files.items())))
+            )
+        except (OSError, ValueError) as exc:
+            raise SkillSecurityError("Skill 私钥无效") from exc
+
+        signature_path = package_root / "signature.json"
+        signature_path.write_text(
+            json.dumps(
+                {
+                    "algorithm": "ed25519",
+                    "key_id": key_id,
+                    "files": files,
+                    "signature": base64.b64encode(signature).decode("ascii"),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return signature_path
 
 
 def _safe_package_path(package_root: Path, relative_path: str) -> Path:

@@ -18,10 +18,11 @@ class HostTransportError(RuntimeError):
 class HostWebSocketClient:
     """保持 JSON/host.call 协议，不在 Runtime 内导入 DCC API。"""
 
-    def __init__(self, service_url: str, timeout: float = 30.0) -> None:
+    def __init__(self, service_url: str, timeout: float = 30.0, connection_factory=connect) -> None:
         _validate_loopback_url(service_url)
         self.service_url = service_url
         self.timeout = timeout
+        self._connection_factory = connection_factory
 
     def call_skill(self, request: HostCallRequest) -> HostCallResponse:
         message = {
@@ -38,7 +39,11 @@ class HostWebSocketClient:
             },
         }
         try:
-            with connect(self.service_url, open_timeout=self.timeout, close_timeout=self.timeout) as socket:
+            with self._connection_factory(
+                self.service_url,
+                open_timeout=self.timeout,
+                close_timeout=self.timeout,
+            ) as socket:
                 socket.send(json.dumps(message, ensure_ascii=False, separators=(",", ":")))
                 raw_response = socket.recv(timeout=self.timeout)
         except Exception as exc:
@@ -58,11 +63,24 @@ def _parse_response(value: Any) -> HostCallResponse:
     if status not in ("success", "failed") or not isinstance(action, str):
         raise HostTransportError("Host Service 响应状态无效")
     error = value.get("error")
+    result = value.get("result") if isinstance(value.get("result"), dict) else None
+    nested_status = result.get("status") if result is not None else None
+    if action == "host.call" and nested_status in ("success", "failed"):
+        nested_error = result.get("error")
+        if nested_status == "failed":
+            return HostCallResponse(
+                status="failed",
+                action=action,
+                request_id=value.get("request_id"),
+                error_code=nested_error.get("code") if isinstance(nested_error, dict) else "skill_failed",
+                error_message=nested_error.get("message") if isinstance(nested_error, dict) else "Skill 执行失败",
+            )
+        result = result.get("result") if isinstance(result.get("result"), dict) else {}
     return HostCallResponse(
         status=status,
         action=action,
         request_id=value.get("request_id"),
-        result=value.get("result") if isinstance(value.get("result"), dict) else None,
+        result=result,
         error_code=error.get("code") if isinstance(error, dict) else None,
         error_message=error.get("message") if isinstance(error, dict) else None,
     )

@@ -10,6 +10,7 @@ from .models import (
     SkillRunResult,
 )
 from .runtime import SkillRuntime
+from .security import SkillSigner
 from .session import SessionStore
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "SkillPackage",
     "SkillRunResult",
     "SkillRuntime",
+    "SkillSigner",
 ]
