@@ -65,3 +65,6 @@ SkillSigner.sign_package(
 ```
 
 `private.key` 只保存在发布环境；Maya 插件和 Runtime 只需要信任配置中的公钥。
+
+仓库内提供了一个示例 Skill：`skills/maya.scene.plan`。签名后可以把它安装到
+`%LOCALAPPDATA%\DccHost\skills`，它会复用 Maya 插件已有的受限计划校验和事务应用逻辑。

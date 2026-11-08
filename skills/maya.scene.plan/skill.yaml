@@ -1,0 +1,11 @@
+{
+  "id": "maya.scene.plan",
+  "version": "1.0.0",
+  "description": "在 Maya 2023 中校验或事务应用受限的 Transform 场景计划。",
+  "hosts": ["maya"],
+  "entry": {"module": "code.entry", "function": "run"},
+  "actions": ["skill.run"],
+  "requires": ["plan.validate", "plan.apply"],
+  "permissions": {"maya_api": true, "network": false, "subprocess": false},
+  "mutates_scene": true
+}

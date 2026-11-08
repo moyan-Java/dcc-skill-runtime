@@ -37,6 +37,15 @@ class FakeHostClient:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_repository_maya_skill_is_indexable_without_loading_code(self):
+        root = Path(__file__).resolve().parents[1] / "skills"
+        catalog = SkillCatalog(root)
+
+        manifests = catalog.refresh()
+
+        self.assertEqual([item.skill_id for item in manifests], ["maya.scene.plan"])
+        self.assertEqual(manifests[0].entry.function, "run")
+
     def test_catalog_indexes_metadata_without_importing_code(self):
         with tempfile.TemporaryDirectory() as temp:
             root, keys = _create_signed_skill(Path(temp))
