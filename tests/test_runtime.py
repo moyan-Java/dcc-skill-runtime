@@ -8,6 +8,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import yaml
+from websockets.sync.server import serve
 
 from dcc_skill_runtime.catalog import SkillCatalog, SkillCatalogError
 from dcc_skill_runtime.knowledge import KnowledgeIndex
@@ -428,6 +429,75 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(hosts[0].host_id, "maya-001")
         self.assertEqual(hosts[0].capabilities, ("plan.validate",))
+
+    def test_transport_uses_real_websocket_json_boundary(self):
+        received = []
+
+        def handler(connection):
+            while True:
+                try:
+                    request = json.loads(connection.recv())
+                except Exception:
+                    return
+                received.append(request)
+                if request.get("action") == "host.list":
+                    connection.send(
+                        json.dumps(
+                            {
+                                "status": "success",
+                                "action": "host.list",
+                                "hosts": [
+                                    {
+                                        "host_id": "maya-001",
+                                        "host_type": "maya",
+                                        "endpoint": "pipe://maya-001",
+                                        "capabilities": ["plan.validate", "plan.apply"],
+                                        "status": "online",
+                                        "last_seen": 100.0,
+                                    }
+                                ],
+                            }
+                        )
+                    )
+                    continue
+                connection.send(
+                    json.dumps(
+                        {
+                            "status": "success",
+                            "action": "host.call",
+                            "request_id": request["request_id"],
+                            "result": {
+                                "status": "success",
+                                "action": "skill.run",
+                                "result": {"created": 1},
+                            },
+                        }
+                    )
+                )
+
+        with serve(handler, "127.0.0.1", 0) as server:
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            host, port = server.socket.getsockname()
+            client = HostWebSocketClient("ws://%s:%s" % (host, port))
+
+            hosts = client.list_hosts()
+            response = client.call_skill(
+                HostCallRequest(
+                    host_id="maya-001",
+                    skill_id="maya.scene.plan",
+                    entry="run",
+                    run_id="run-real-ws",
+                    args={"plan": {}},
+                    confirm=True,
+                )
+            )
+            server.shutdown()
+            worker.join(timeout=2.0)
+
+        self.assertEqual(hosts[0].host_id, "maya-001")
+        self.assertEqual(response.result, {"created": 1})
+        self.assertEqual([item["action"] for item in received], ["host.list", "host.call"])
 
 
 def _create_signed_skill(
