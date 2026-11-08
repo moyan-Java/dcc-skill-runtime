@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from starlette.testclient import TestClient
@@ -158,6 +159,21 @@ class McpServerTests(unittest.TestCase):
             self.assertTrue(result["cancelled"])
             self.assertEqual(result["status"], "cancelled")
             runtime.stop()
+
+    def test_mcp_run_stops_runtime_when_server_exits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = SkillRuntime(
+                SkillCatalog(Path(temp) / "skills"),
+                SessionStore(Path(temp) / "session.db"),
+                FakeHostClient(),
+            )
+            runtime.start()
+            server = SkillRuntimeMcpServer(runtime)
+            with mock.patch.object(server.mcp, "run", side_effect=RuntimeError("stop")):
+                with self.assertRaisesRegex(RuntimeError, "stop"):
+                    server.run()
+            self.assertIsNone(runtime._executor)
+            self.assertFalse(runtime._started)
 
     def test_knowledge_search_returns_resource_id_and_sources(self):
         with tempfile.TemporaryDirectory() as temp:

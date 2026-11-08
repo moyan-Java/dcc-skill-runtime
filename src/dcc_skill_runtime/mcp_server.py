@@ -153,6 +153,8 @@ class SkillRuntimeMcpServer:
             self.mcp.run(transport="streamable-http")
         except OSError as exc:
             raise RuntimeError("MCP 监听端口或地址不可用") from exc
+        finally:
+            self.runtime.stop()
 
     def _register_tools(self) -> None:
         self.mcp.add_tool(
