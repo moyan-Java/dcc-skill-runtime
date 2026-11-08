@@ -187,7 +187,6 @@ class McpServerTests(unittest.TestCase):
             self.assertIsNotNone(asyncio.run(verifier.verify_token(token)))
             self.assertIsNone(asyncio.run(verifier.verify_token("wrong-token")))
 
-            client = TestClient(secured.mcp.streamable_http_app())
             request = {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -198,15 +197,29 @@ class McpServerTests(unittest.TestCase):
                     "clientInfo": {"name": "test", "version": "1"},
                 },
             }
-            self.assertEqual(client.post("/mcp", json=request).status_code, 401)
-            self.assertEqual(
-                client.post(
+            with TestClient(
+                secured.mcp.streamable_http_app(),
+                base_url="http://127.0.0.1:8892",
+            ) as client:
+                self.assertEqual(client.post("/mcp", json=request).status_code, 401)
+                self.assertEqual(
+                    client.post(
+                        "/mcp",
+                        json=request,
+                        headers={"Authorization": "Bearer wrong-token"},
+                    ).status_code,
+                    401,
+                )
+                valid = client.post(
                     "/mcp",
                     json=request,
-                    headers={"Authorization": "Bearer wrong-token"},
-                ).status_code,
-                401,
-            )
+                    headers={
+                        "Authorization": "Bearer " + token,
+                        "Accept": "application/json, text/event-stream",
+                    },
+                )
+                self.assertEqual(valid.status_code, 200)
+                self.assertIn('"serverInfo"', valid.text)
 
 
 def _build_server(temp: Path, knowledge=None) -> SkillRuntimeMcpServer:
