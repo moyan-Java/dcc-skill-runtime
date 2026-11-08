@@ -324,6 +324,7 @@ def _manifest_message(manifest: SkillManifest) -> dict[str, object]:
         "requires": list(manifest.requires),
         "permissions": dict(manifest.permissions),
         "mutates_scene": manifest.mutates_scene,
+        "args": dict(manifest.args_schema),
     }
 
 

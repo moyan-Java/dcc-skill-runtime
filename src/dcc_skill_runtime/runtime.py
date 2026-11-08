@@ -96,6 +96,7 @@ class SkillRuntime:
         package = self.catalog.load(skill_id)
         manifest = package.manifest
         self._validate_skill_action(manifest)
+        self._validate_args(manifest, args)
         self._validate_host(host_id, host_type, manifest.hosts, manifest.requires)
         effective_confirm = bool(confirm or manifest.mutates_scene)
         run = self.sessions.queue_run(session_id, skill_id, args, effective_confirm)
@@ -125,6 +126,7 @@ class SkillRuntime:
         package = self.catalog.load(skill_id)
         manifest = package.manifest
         self._validate_skill_action(manifest)
+        self._validate_args(manifest, args)
         self._validate_host(host_id, host_type, manifest.hosts, manifest.requires)
         if manifest.mutates_scene and not confirm:
             raise SkillRuntimeError("场景修改 Skill 需要用户确认")
@@ -236,6 +238,34 @@ class SkillRuntime:
         if "skill.run" not in manifest.actions:
             raise SkillRuntimeError("Skill 未声明 skill.run action")
 
+    @staticmethod
+    def _validate_args(manifest: SkillManifest, args: Mapping[str, Any]) -> None:
+        if not isinstance(args, Mapping):
+            raise SkillRuntimeError("Skill args 必须是对象")
+        schema = manifest.args_schema
+        if not schema:
+            return
+        properties = schema["properties"]
+        required = schema["required"]
+        if any(not isinstance(name, str) for name in args):
+            raise SkillRuntimeError("Skill args 参数名必须是字符串")
+        if not schema["additionalProperties"]:
+            unknown = sorted(set(args) - set(properties))
+            if unknown:
+                raise SkillRuntimeError("Skill args 包含未声明参数: %s" % ", ".join(unknown))
+        missing = [name for name in required if name not in args]
+        if missing:
+            raise SkillRuntimeError("Skill args 缺少必填参数: %s" % ", ".join(missing))
+        for name, value in args.items():
+            definition = properties.get(name)
+            if definition is None:
+                continue
+            if not _matches_type(value, definition["type"]):
+                raise SkillRuntimeError("Skill args 参数类型错误: %s" % name)
+            enum = definition.get("enum")
+            if enum is not None and value not in enum:
+                raise SkillRuntimeError("Skill args 参数值不允许: %s" % name)
+
     def _host_lock(self, host_id: str) -> threading.Lock:
         with self._host_locks_guard:
             lock = self._host_locks.get(host_id)
@@ -256,3 +286,21 @@ def _local_app_data() -> str:
     if value:
         return value
     return str(Path.home() / "AppData" / "Local")
+
+
+def _matches_type(value: Any, expected: str) -> bool:
+    if expected == "null":
+        return value is None
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "object":
+        return isinstance(value, Mapping)
+    if expected == "array":
+        return isinstance(value, list)
+    return False

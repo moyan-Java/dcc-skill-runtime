@@ -306,6 +306,26 @@ class RuntimeTests(unittest.TestCase):
                 runtime.submit(session.session_id, "maya.scene.plan", "maya-001", {})
             runtime.stop()
 
+    def test_runtime_rejects_args_not_declared_by_skill(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, keys = _create_signed_skill(Path(temp), args_schema=True)
+            catalog = SkillCatalog(root.parent, keys)
+            sessions = SessionStore(Path(temp) / "session.db")
+            runtime = SkillRuntime(catalog, sessions, FakeHostClient())
+            runtime.start()
+            session = sessions.create_session("project-a")
+
+            with self.assertRaisesRegex(SkillRuntimeError, "缺少必填参数"):
+                runtime.submit(session.session_id, "maya.scene.plan", "maya-001", {})
+            with self.assertRaisesRegex(SkillRuntimeError, "参数类型错误"):
+                runtime.submit(
+                    session.session_id,
+                    "maya.scene.plan",
+                    "maya-001",
+                    {"plan": "not-an-object"},
+                )
+            runtime.stop()
+
     def test_signer_generates_package_signature(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
@@ -400,7 +420,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(hosts[0].capabilities, ("plan.validate",))
 
 
-def _create_signed_skill(base: Path, mutates_scene: bool = False):
+def _create_signed_skill(
+    base: Path,
+    mutates_scene: bool = False,
+    args_schema: bool = False,
+):
     root = base / "maya.scene.plan"
     code_root = root / "code"
     code_root.mkdir(parents=True)
@@ -418,7 +442,17 @@ def _create_signed_skill(base: Path, mutates_scene: bool = False):
         "  maya_api: true\n"
         "  network: false\n"
         "  subprocess: false\n"
-        "mutates_scene: %s\n" % ("true" if mutates_scene else "false")
+        + (
+            "args:\n"
+            "  properties:\n"
+            "    plan:\n"
+            "      type: object\n"
+            "  required: [plan]\n"
+            "  additionalProperties: false\n"
+            if args_schema
+            else ""
+        )
+        + ("mutates_scene: %s\n" % ("true" if mutates_scene else "false"))
     )
     (root / "skill.yaml").write_text(manifest_text, encoding="utf-8")
     (root / "SKILL.md").write_text("# plan\nMaya plan skill", encoding="utf-8")

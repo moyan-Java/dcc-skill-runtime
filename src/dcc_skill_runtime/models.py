@@ -28,6 +28,7 @@ class SkillManifest:
     requires: Tuple[str, ...]
     permissions: Mapping[str, bool]
     mutates_scene: bool
+    args_schema: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

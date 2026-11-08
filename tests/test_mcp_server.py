@@ -102,6 +102,7 @@ class McpServerTests(unittest.TestCase):
 
             self.assertIn("Maya plan skill", result["instructions"])
             self.assertEqual(result["entry"], {"module": "code.entry", "function": "run"})
+            self.assertEqual(result["args"]["required"], ["plan"])
             self.assertNotIn("code", result)
 
     def test_skill_run_returns_queued_run_id(self):
@@ -120,7 +121,7 @@ class McpServerTests(unittest.TestCase):
                 "project-a",
                 "maya-001",
                 "maya.scene.plan",
-                {"nodes": []},
+                {"plan": {}},
             )
 
             self.assertEqual(result["status"], "queued")
@@ -247,6 +248,12 @@ def _create_signed_skill(base: Path):
         "  function: run\n"
         "actions: [skill.run]\n"
         "requires: []\n"
+        "args:\n"
+        "  properties:\n"
+        "    plan:\n"
+        "      type: object\n"
+        "  required: [plan]\n"
+        "  additionalProperties: false\n"
         "permissions: {}\n"
     )
     (root / "skill.yaml").write_text(manifest_text, encoding="utf-8")

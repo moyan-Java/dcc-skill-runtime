@@ -6,6 +6,14 @@
   "entry": {"module": "code.entry", "function": "run"},
   "actions": ["skill.run"],
   "requires": ["plan.validate", "plan.apply"],
+  "args": {
+    "properties": {
+      "mode": {"type": "string", "enum": ["validate", "apply"]},
+      "plan": {"type": "object"}
+    },
+    "required": ["plan"],
+    "additionalProperties": false
+  },
   "permissions": {"maya_api": true, "network": false, "subprocess": false},
   "mutates_scene": true
 }

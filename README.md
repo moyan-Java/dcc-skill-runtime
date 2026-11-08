@@ -40,6 +40,23 @@ def run(context, args):
     ...
 ```
 
+Skill 可以在 `skill.yaml` 中声明顶层参数。Runtime 和 Maya 插件都会在执行前检查必填字段、基础类型、枚举值和未声明字段：
+
+```json
+{
+  "args": {
+    "properties": {
+      "mode": {"type": "string", "enum": ["validate", "apply"]},
+      "plan": {"type": "object"}
+    },
+    "required": ["plan"],
+    "additionalProperties": false
+  }
+}
+```
+
+这只是 Skill 输入的边界校验，不执行任意 JSON Schema，也不会替代 Skill 自己的业务校验。
+
 Runtime 不在自己的 Python 进程执行 Maya API。它只把已校验的 Skill 请求发送给
 Host Service，再由 Maya 插件按请求动态加载 Skill。
 
