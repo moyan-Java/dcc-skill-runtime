@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 from pathlib import Path
+import secrets
 from typing import Any, Optional
+from uuid import uuid4
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.auth.provider import AccessToken
+from mcp.server.auth.settings import AuthSettings
 
 from .catalog import SkillCatalog
 from .knowledge import KnowledgeIndex
@@ -28,16 +33,31 @@ class SkillRuntimeMcpServer:
         knowledge: Optional[KnowledgeIndex] = None,
         host: str = "127.0.0.1",
         port: int = 8892,
+        token_path: Optional[Path] = None,
     ) -> None:
         self.runtime = runtime
         self.host_client = host_client or runtime.host_client
         self.knowledge = knowledge
+        self._knowledge_results: dict[str, dict[str, object]] = {}
+        token_verifier = None
+        auth = None
+        if token_path is not None:
+            token = _load_or_create_token(token_path)
+            token_verifier = LocalTokenVerifier(token)
+            auth = AuthSettings(
+                issuer_url="http://%s:%s" % (host, port),
+                resource_server_url="http://%s:%s" % (host, port),
+                validate_token_resource=False,
+                required_scopes=[],
+            )
         self.mcp = FastMCP(
             "DCC Skill Runtime",
             instructions="通过受信任的 Skill 连接本地 DCC 宿主。",
             host=host,
             port=port,
             streamable_http_path="/mcp",
+            auth=auth,
+            token_verifier=token_verifier,
         )
         self._register_tools()
         self._register_resources()
@@ -84,12 +104,55 @@ class SkillRuntimeMcpServer:
             "skill_id": run.skill_id,
         }
 
+    def run_status(self, run_id: str) -> dict[str, object]:
+        """读取一次 Skill 运行的当前状态和结果。"""
+
+        return _run_message(self.runtime.sessions.get_run(run_id))
+
+    def run_cancel(self, run_id: str) -> dict[str, object]:
+        """只取消尚未进入宿主调用的 queued 运行。"""
+
+        cancelled = self.runtime.sessions.cancel_queued(run_id)
+        message = _run_message(self.runtime.sessions.get_run(run_id))
+        message["cancelled"] = cancelled
+        return message
+
+    def knowledge_search(self, query: str, limit: int = 5) -> dict[str, object]:
+        """检索本地知识库并返回带来源的有界片段。"""
+
+        if self.knowledge is None:
+            raise ValueError("知识库尚未配置")
+        if not query.strip():
+            raise ValueError("query 不能为空")
+        if not 1 <= limit <= 20:
+            raise ValueError("limit 必须在 1 到 20 之间")
+        query_id = uuid4().hex
+        hits = self.knowledge.search(query, limit=limit)
+        result = {
+            "query_id": query_id,
+            "hits": [
+                {
+                    "document_id": hit.document_id,
+                    "title": hit.title,
+                    "content": hit.content[:16384],
+                    "source": hit.source,
+                    "score": hit.score,
+                }
+                for hit in hits
+            ],
+        }
+        self._knowledge_results[query_id] = result
+        return result
+
     def run(self, transport: str = "streamable-http") -> None:
         """启动 MCP Server；默认使用本地 Streamable HTTP。"""
 
         if transport != "streamable-http":
             raise ValueError("当前只支持 streamable-http")
-        self.mcp.run(transport="streamable-http")
+        try:
+            self.mcp.run(transport="streamable-http")
+        except OSError as exc:
+            raise RuntimeError("MCP 监听端口或地址不可用") from exc
 
     def _register_tools(self) -> None:
         self.mcp.add_tool(
@@ -112,6 +175,21 @@ class SkillRuntimeMcpServer:
             name="skill_run",
             description="提交一次已签名 Skill 运行并返回 run_id。",
         )
+        self.mcp.add_tool(
+            self.run_status,
+            name="run_status",
+            description="读取一次 Skill 运行的状态和结果。",
+        )
+        self.mcp.add_tool(
+            self.run_cancel,
+            name="run_cancel",
+            description="取消尚未开始宿主调用的 Skill 运行。",
+        )
+        self.mcp.add_tool(
+            self.knowledge_search,
+            name="knowledge_search",
+            description="检索本地知识库并返回带来源的片段。",
+        )
 
     def _register_resources(self) -> None:
         self.mcp.resource(
@@ -126,12 +204,24 @@ class SkillRuntimeMcpServer:
             description="一个已签名 Skill 的说明和引用文档。",
             mime_type="application/json",
         )(self._skill_resource)
+        self.mcp.resource(
+            "knowledge://result/{query_id}",
+            name="knowledge_result",
+            description="一次知识库查询的只读结果。",
+            mime_type="application/json",
+        )(self._knowledge_resource)
 
     def _catalog_resource(self) -> str:
         return _json_text({"skills": self.skill_list()})
 
     def _skill_resource(self, skill_id: str) -> str:
         return _json_text(self.skill_describe(skill_id))
+
+    def _knowledge_resource(self, query_id: str) -> str:
+        result = self._knowledge_results.get(query_id)
+        if result is None:
+            raise ValueError("知识库查询结果不存在")
+        return _json_text(result)
 
 
 def build_runtime_mcp_server(
@@ -156,6 +246,7 @@ def build_runtime_mcp_server(
         knowledge=knowledge,
         host=host,
         port=port,
+        token_path=paths.runtime_token,
     )
 
 
@@ -178,6 +269,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         session_db=args.session_db or defaults.session_db,
         knowledge_db=args.knowledge_db or defaults.knowledge_db,
         trust_config=args.trust_config or defaults.trust_config,
+        runtime_token=defaults.runtime_token,
     )
     build_runtime_mcp_server(
         paths=paths,
@@ -186,6 +278,34 @@ def main(argv: Optional[list[str]] = None) -> int:
         port=args.port,
     ).run()
     return 0
+
+
+class LocalTokenVerifier:
+    """校验当前用户本地生成的 Bearer Token。"""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    async def verify_token(self, token: str) -> Optional[AccessToken]:
+        if not hmac.compare_digest(token, self._token):
+            return None
+        return AccessToken(
+            token=token,
+            client_id="local-agent",
+            scopes=[],
+        )
+
+
+def _load_or_create_token(path: Path) -> str:
+    path = Path(path)
+    if path.is_file():
+        token = path.read_text(encoding="ascii").strip()
+        if token:
+            return token
+    path.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(32)
+    path.write_text(token + "\n", encoding="ascii")
+    return token
 
 
 def _load_trusted_keys(path: Path) -> dict[str, bytes]:
@@ -230,6 +350,23 @@ def _host_message(host: HostInfo) -> dict[str, object]:
         "status": host.status,
         "last_seen": host.last_seen,
     }
+
+
+def _run_message(run: Any) -> dict[str, object]:
+    message: dict[str, object] = {
+        "run_id": run.run_id,
+        "session_id": run.session_id,
+        "skill_id": run.skill_id,
+        "status": run.status,
+    }
+    if run.result is not None:
+        message["result"] = dict(run.result)
+    if run.error_code:
+        message["error"] = {
+            "code": run.error_code,
+            "message": run.error_message,
+        }
+    return message
 
 
 def _json_text(value: object) -> str:

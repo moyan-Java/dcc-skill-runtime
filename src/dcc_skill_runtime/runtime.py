@@ -25,6 +25,7 @@ class RuntimePaths:
     session_db: Path
     knowledge_db: Path
     trust_config: Path
+    runtime_token: Optional[Path] = None
 
     @classmethod
     def from_local_app_data(cls, local_app_data: Optional[str] = None) -> "RuntimePaths":
@@ -34,6 +35,7 @@ class RuntimePaths:
             session_db=root / "runtime" / "session.db",
             knowledge_db=root / "knowledge" / "index.db",
             trust_config=root / "config" / "skill-trust.json",
+            runtime_token=root / "config" / "runtime-token",
         )
 
 

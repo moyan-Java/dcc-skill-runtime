@@ -7,8 +7,10 @@ import unittest
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from starlette.testclient import TestClient
 
 from dcc_skill_runtime.catalog import SkillCatalog
+from dcc_skill_runtime.knowledge import KnowledgeIndex
 from dcc_skill_runtime.mcp_server import SkillRuntimeMcpServer
 from dcc_skill_runtime.models import HostCallResponse, HostInfo
 from dcc_skill_runtime.runtime import SkillRuntime
@@ -43,7 +45,15 @@ class McpServerTests(unittest.TestCase):
 
             self.assertEqual(
                 {tool.name for tool in tools},
-                {"skill_list", "skill_describe", "host_list", "skill_run"},
+                {
+                    "skill_list",
+                    "skill_describe",
+                    "host_list",
+                    "skill_run",
+                    "run_status",
+                    "run_cancel",
+                    "knowledge_search",
+                },
             )
 
     def test_skill_list_only_returns_index_metadata(self):
@@ -127,17 +137,87 @@ class McpServerTests(unittest.TestCase):
             self.assertEqual([str(resource.uri) for resource in resources], ["skill://catalog"])
             self.assertEqual(
                 [str(template.uriTemplate) for template in templates],
-                ["skill://{skill_id}"],
+                ["skill://{skill_id}", "knowledge://result/{query_id}"],
             )
             catalog_text = server._catalog_resource()
             self.assertEqual(json.loads(catalog_text), {"skills": []})
 
+    def test_run_cancel_only_changes_queued_record(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            sessions = SessionStore(temp_path / "session.db")
+            runtime = SkillRuntime(SkillCatalog(temp_path / "skills"), sessions, FakeHostClient())
+            runtime.start()
+            session = sessions.create_session("project-a")
+            run = sessions.queue_run(session.session_id, "maya.scene.plan", {}, True)
+            server = SkillRuntimeMcpServer(runtime, host_client=FakeHostClient())
 
-def _build_server(temp: Path) -> SkillRuntimeMcpServer:
+            result = server.run_cancel(run.run_id)
+
+            self.assertTrue(result["cancelled"])
+            self.assertEqual(result["status"], "cancelled")
+            runtime.stop()
+
+    def test_knowledge_search_returns_resource_id_and_sources(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            index = KnowledgeIndex(temp_path / "knowledge.db")
+            index.add_document("maya-doc", "Maya", "Maya 节点计划", "maya.md")
+            server = _build_server(temp_path, knowledge=index)
+
+            result = server.knowledge_search("Maya 节点", limit=1)
+            resource = json.loads(server._knowledge_resource(result["query_id"]))
+
+            self.assertEqual(resource["query_id"], result["query_id"])
+            self.assertEqual(resource["hits"][0]["source"], "maya.md")
+
+    def test_local_bearer_token_is_created_and_rejects_wrong_value(self):
+        with tempfile.TemporaryDirectory() as temp:
+            token_path = Path(temp) / "config" / "runtime-token"
+            server = _build_server(Path(temp))
+            secured = SkillRuntimeMcpServer(
+                server.runtime,
+                host_client=FakeHostClient(),
+                token_path=token_path,
+            )
+            token = token_path.read_text(encoding="ascii").strip()
+            verifier = secured.mcp._token_verifier
+
+            self.assertTrue(token)
+            self.assertIsNotNone(asyncio.run(verifier.verify_token(token)))
+            self.assertIsNone(asyncio.run(verifier.verify_token("wrong-token")))
+
+            client = TestClient(secured.mcp.streamable_http_app())
+            request = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            }
+            self.assertEqual(client.post("/mcp", json=request).status_code, 401)
+            self.assertEqual(
+                client.post(
+                    "/mcp",
+                    json=request,
+                    headers={"Authorization": "Bearer wrong-token"},
+                ).status_code,
+                401,
+            )
+
+
+def _build_server(temp: Path, knowledge=None) -> SkillRuntimeMcpServer:
     catalog = SkillCatalog(temp / "skills")
     runtime = SkillRuntime(catalog, SessionStore(temp / "session.db"), FakeHostClient())
     runtime.start()
-    return SkillRuntimeMcpServer(runtime, host_client=FakeHostClient())
+    return SkillRuntimeMcpServer(
+        runtime,
+        host_client=FakeHostClient(),
+        knowledge=knowledge,
+    )
 
 
 def _create_signed_skill(base: Path):
