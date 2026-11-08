@@ -48,6 +48,43 @@ class FakeHostClient:
         )
 
 
+class MultiHostClient:
+    def __init__(self):
+        self.hosts = (
+            HostInfo("maya-001", "maya", "pipe://maya-001", (), "online", 1.0),
+            HostInfo("maya-002", "maya", "pipe://maya-002", (), "online", 1.0),
+        )
+        self.started = []
+        self.active = {}
+        self.max_active = {}
+        self._lock = threading.Lock()
+        self.started_event = threading.Event()
+        self.host_started = {
+            "maya-001": threading.Event(),
+            "maya-002": threading.Event(),
+        }
+        self.release = threading.Event()
+
+    def list_hosts(self):
+        return self.hosts
+
+    def call_skill(self, request):
+        with self._lock:
+            active = self.active.get(request.host_id, 0) + 1
+            self.active[request.host_id] = active
+            self.max_active[request.host_id] = max(
+                active,
+                self.max_active.get(request.host_id, 0),
+            )
+            self.started.append(request.host_id)
+            self.started_event.set()
+            self.host_started[request.host_id].set()
+        self.release.wait(2.0)
+        with self._lock:
+            self.active[request.host_id] -= 1
+        return HostCallResponse("success", "skill.run", request.run_id, {})
+
+
 class RuntimeTests(unittest.TestCase):
     def test_repository_maya_skill_is_indexable_without_loading_code(self):
         root = Path(__file__).resolve().parents[1] / "skills"
@@ -183,6 +220,43 @@ class RuntimeTests(unittest.TestCase):
             client.release.set()
             runtime.stop()
             self.assertEqual(sessions.get_run(run.run_id).status, "success")
+
+    def test_runtime_serializes_same_host_and_runs_other_hosts_in_parallel(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, keys = _create_signed_skill(Path(temp))
+            catalog = SkillCatalog(root.parent, keys)
+            sessions = SessionStore(Path(temp) / "session.db")
+            client = MultiHostClient()
+            runtime = SkillRuntime(catalog, sessions, client, worker_count=4)
+            runtime.start()
+            first = sessions.create_session("project-a", "maya-001")
+            second = sessions.create_session("project-a", "maya-001")
+            third = sessions.create_session("project-a", "maya-002")
+
+            first_run = runtime.submit(first.session_id, "maya.scene.plan", "maya-001", {})
+            second_run = runtime.submit(second.session_id, "maya.scene.plan", "maya-001", {})
+            third_run = runtime.submit(third.session_id, "maya.scene.plan", "maya-002", {})
+
+            self.assertTrue(client.host_started["maya-002"].wait(1.0))
+            self.assertEqual(client.max_active.get("maya-001"), 1)
+            client.release.set()
+            runtime.stop()
+            self.assertEqual(sessions.get_run(first_run.run_id).status, "success")
+            self.assertEqual(sessions.get_run(second_run.run_id).status, "success")
+            self.assertEqual(sessions.get_run(third_run.run_id).status, "success")
+
+    def test_runtime_rejects_unknown_host_before_queuing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, keys = _create_signed_skill(Path(temp))
+            catalog = SkillCatalog(root.parent, keys)
+            sessions = SessionStore(Path(temp) / "session.db")
+            runtime = SkillRuntime(catalog, sessions, MultiHostClient())
+            runtime.start()
+            session = sessions.create_session("project-a")
+
+            with self.assertRaisesRegex(SkillRuntimeError, "未知宿主"):
+                runtime.submit(session.session_id, "maya.scene.plan", "maya-999", {})
+            runtime.stop()
 
     def test_signer_generates_package_signature(self):
         with tempfile.TemporaryDirectory() as temp:
