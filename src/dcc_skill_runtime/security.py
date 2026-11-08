@@ -101,7 +101,7 @@ class SkillSignature:
         package_files = {
             path.relative_to(package_root).as_posix()
             for path in package_root.rglob("*")
-            if path.is_file() and path.name != "signature.json"
+            if _is_skill_source_file(path)
         }
         if signed_files != package_files:
             missing = sorted(package_files - signed_files)
@@ -163,7 +163,7 @@ class SkillSigner:
 
         files = {}
         for path in sorted(package_root.rglob("*")):
-            if not path.is_file() or path.name == "signature.json":
+            if not _is_skill_source_file(path):
                 continue
             relative = path.relative_to(package_root).as_posix()
             files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -209,3 +209,13 @@ def _safe_package_path(package_root: Path, relative_path: str) -> Path:
     except ValueError as exc:
         raise SkillSecurityError("Skill 文件路径越过包根目录") from exc
     return candidate
+
+
+def _is_skill_source_file(path: Path) -> bool:
+    """只把 Skill 源文件纳入签名，排除解释器生成的临时字节码。"""
+
+    if not path.is_file() or path.name == "signature.json":
+        return False
+    if any(part.lower() == "__pycache__" for part in path.parts):
+        return False
+    return path.suffix.lower() not in (".pyc", ".pyo")

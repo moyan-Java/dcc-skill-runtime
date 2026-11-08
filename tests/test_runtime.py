@@ -352,6 +352,30 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(signature_path.is_file())
             self.assertEqual(catalog.load("maya.scene.plan").manifest.skill_id, "maya.scene.plan")
 
+    def test_signer_ignores_python_bytecode_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            package_root, _ = _create_signed_skill(base)
+            cache = package_root / "code" / "__pycache__"
+            cache.mkdir()
+            (cache / "entry.cpython-310.pyc").write_bytes(b"temporary")
+            private_key = base / "private.key"
+            trust_config = base / "trust.json"
+            SkillSigner.generate_key_pair(private_key, trust_config, "dev")
+
+            SkillSigner.sign_package(package_root, private_key, "dev")
+
+            signature = json.loads(
+                (package_root / "signature.json").read_text(encoding="utf-8")
+            )
+            self.assertNotIn("code/__pycache__/entry.cpython-310.pyc", signature["files"])
+            trusted = SkillSignature.load_trusted_keys(trust_config)
+            SkillSignature.verify(
+                package_root,
+                yaml.safe_load((package_root / "skill.yaml").read_text(encoding="utf-8")),
+                trusted,
+            )
+
     def test_transport_unwraps_nested_host_call_result(self):
         class Socket:
             def __enter__(self):
