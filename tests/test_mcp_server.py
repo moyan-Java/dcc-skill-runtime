@@ -12,7 +12,7 @@ from starlette.testclient import TestClient
 
 from dcc_skill_runtime.catalog import SkillCatalog
 from dcc_skill_runtime.knowledge import KnowledgeIndex
-from dcc_skill_runtime.mcp_server import SkillRuntimeMcpServer
+from dcc_skill_runtime.mcp_server import SkillRuntimeMcpServer, main
 from dcc_skill_runtime.models import HostCallResponse, HostInfo
 from dcc_skill_runtime.runtime import SkillRuntime
 from dcc_skill_runtime.security import SkillSignature
@@ -38,6 +38,29 @@ class FakeHostClient:
 
 
 class McpServerTests(unittest.TestCase):
+    def test_main_passes_explicit_runtime_token_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            token_path = Path(temp) / "config" / "runtime-token"
+            fake_server = mock.Mock()
+            with mock.patch("dcc_skill_runtime.mcp_server.build_runtime_mcp_server", return_value=fake_server) as build:
+                self.assertEqual(
+                    main(
+                        [
+                            "--skills", str(Path(temp) / "skills"),
+                            "--session-db", str(Path(temp) / "session.db"),
+                            "--knowledge-db", str(Path(temp) / "knowledge.db"),
+                            "--trust-config", str(Path(temp) / "trust.json"),
+                            "--runtime-token", str(token_path),
+                            "--port", "18892",
+                        ]
+                    ),
+                    0,
+                )
+
+            paths = build.call_args.kwargs["paths"]
+            self.assertEqual(paths.runtime_token, token_path)
+            fake_server.run.assert_called_once_with()
+
     def test_registers_stable_read_only_tools(self):
         with tempfile.TemporaryDirectory() as temp:
             server = _build_server(Path(temp))

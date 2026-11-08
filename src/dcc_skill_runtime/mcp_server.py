@@ -275,6 +275,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--session-db", type=Path, help="会话数据库路径")
     parser.add_argument("--knowledge-db", type=Path, help="知识库数据库路径")
     parser.add_argument("--trust-config", type=Path, help="Skill 信任公钥配置")
+    parser.add_argument("--runtime-token", type=Path, help="MCP Bearer Token 文件路径")
     parser.add_argument("--service-url", default="ws://127.0.0.1:8890")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8892)
@@ -286,7 +287,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         session_db=args.session_db or defaults.session_db,
         knowledge_db=args.knowledge_db or defaults.knowledge_db,
         trust_config=args.trust_config or defaults.trust_config,
-        runtime_token=defaults.runtime_token,
+        runtime_token=args.runtime_token or defaults.runtime_token,
     )
     build_runtime_mcp_server(
         paths=paths,
