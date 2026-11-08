@@ -95,7 +95,8 @@ class SkillRuntime:
         self._ensure_started()
         package = self.catalog.load(skill_id)
         manifest = package.manifest
-        self._validate_host(host_id, host_type, manifest.hosts)
+        self._validate_skill_action(manifest)
+        self._validate_host(host_id, host_type, manifest.hosts, manifest.requires)
         effective_confirm = bool(confirm or manifest.mutates_scene)
         run = self.sessions.queue_run(session_id, skill_id, args, effective_confirm)
         if self._executor is None:  # pragma: no cover - start() 已保证
@@ -123,8 +124,8 @@ class SkillRuntime:
             raise SkillRuntimeError("Skill Runtime 尚未启动")
         package = self.catalog.load(skill_id)
         manifest = package.manifest
-        if host_type not in manifest.hosts:
-            raise SkillRuntimeError("Skill 不支持宿主: %s" % host_type)
+        self._validate_skill_action(manifest)
+        self._validate_host(host_id, host_type, manifest.hosts, manifest.requires)
         if manifest.mutates_scene and not confirm:
             raise SkillRuntimeError("场景修改 Skill 需要用户确认")
 
@@ -205,6 +206,7 @@ class SkillRuntime:
         host_id: str,
         host_type: str,
         supported_hosts: tuple[str, ...],
+        required_capabilities: tuple[str, ...],
     ) -> None:
         if not host_id.strip():
             raise SkillRuntimeError("host_id 不能为空")
@@ -221,8 +223,18 @@ class SkillRuntime:
                 raise SkillRuntimeError("宿主类型不匹配: %s" % host_id)
             if host.host_type not in supported_hosts:
                 raise SkillRuntimeError("Skill 不支持宿主类型: %s" % host.host_type)
+            missing = sorted(set(required_capabilities) - set(host.capabilities))
+            if missing:
+                raise SkillRuntimeError(
+                    "宿主缺少 Skill 所需能力: %s" % ", ".join(missing)
+                )
             return
         raise SkillRuntimeError("未知宿主: %s" % host_id)
+
+    @staticmethod
+    def _validate_skill_action(manifest: SkillManifest) -> None:
+        if "skill.run" not in manifest.actions:
+            raise SkillRuntimeError("Skill 未声明 skill.run action")
 
     def _host_lock(self, host_id: str) -> threading.Lock:
         with self._host_locks_guard:

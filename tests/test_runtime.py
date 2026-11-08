@@ -32,7 +32,14 @@ class FakeHostClient:
 
     def list_hosts(self):
         return (
-            HostInfo("maya-001", "maya", "pipe://maya-001", (), "online", 1.0),
+            HostInfo(
+                "maya-001",
+                "maya",
+                "pipe://maya-001",
+                ("plan.validate", "plan.apply"),
+                "online",
+                1.0,
+            ),
         )
 
     def call_skill(self, request):
@@ -51,8 +58,22 @@ class FakeHostClient:
 class MultiHostClient:
     def __init__(self):
         self.hosts = (
-            HostInfo("maya-001", "maya", "pipe://maya-001", (), "online", 1.0),
-            HostInfo("maya-002", "maya", "pipe://maya-002", (), "online", 1.0),
+            HostInfo(
+                "maya-001",
+                "maya",
+                "pipe://maya-001",
+                ("plan.validate", "plan.apply"),
+                "online",
+                1.0,
+            ),
+            HostInfo(
+                "maya-002",
+                "maya",
+                "pipe://maya-002",
+                ("plan.validate", "plan.apply"),
+                "online",
+                1.0,
+            ),
         )
         self.started = []
         self.active = {}
@@ -256,6 +277,33 @@ class RuntimeTests(unittest.TestCase):
 
             with self.assertRaisesRegex(SkillRuntimeError, "未知宿主"):
                 runtime.submit(session.session_id, "maya.scene.plan", "maya-999", {})
+            runtime.stop()
+
+    def test_runtime_rejects_host_missing_skill_capability(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, keys = _create_signed_skill(Path(temp))
+            catalog = SkillCatalog(root.parent, keys)
+            sessions = SessionStore(Path(temp) / "session.db")
+
+            class MissingCapabilityClient(FakeHostClient):
+                def list_hosts(self):
+                    return (
+                        HostInfo(
+                            "maya-001",
+                            "maya",
+                            "pipe://maya-001",
+                            ("plan.validate",),
+                            "online",
+                            1.0,
+                        ),
+                    )
+
+            runtime = SkillRuntime(catalog, sessions, MissingCapabilityClient())
+            runtime.start()
+            session = sessions.create_session("project-a")
+
+            with self.assertRaisesRegex(SkillRuntimeError, "缺少 Skill 所需能力"):
+                runtime.submit(session.session_id, "maya.scene.plan", "maya-001", {})
             runtime.stop()
 
     def test_signer_generates_package_signature(self):
