@@ -1,0 +1,4 @@
+cryptography>=42,<45
+PyYAML>=6,<7
+websockets>=13,<16
+mcp>=1.28,<2
