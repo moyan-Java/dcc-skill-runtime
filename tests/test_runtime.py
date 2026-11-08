@@ -142,6 +142,16 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(SkillSecurityError):
                 catalog.load("maya.scene.plan")
 
+    def test_catalog_rejects_unsigned_extra_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, keys = _create_signed_skill(Path(temp))
+            (root / "code" / "extra.py").write_text("value = 1\n", encoding="utf-8")
+            catalog = SkillCatalog(root.parent, keys)
+            catalog.refresh()
+
+            with self.assertRaises(SkillSecurityError):
+                catalog.load("maya.scene.plan")
+
     def test_catalog_rejects_invalid_entry_module(self):
         with tempfile.TemporaryDirectory() as temp:
             skill_root = Path(temp) / "maya.scene.plan"

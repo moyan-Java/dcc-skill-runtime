@@ -97,6 +97,19 @@ class SkillSignature:
             if actual_hash != expected_hash.lower():
                 raise SkillSecurityError("Skill 文件哈希不匹配: %s" % raw_path)
             normalized[raw_path.replace("\\", "/")] = actual_hash
+        signed_files = set(normalized)
+        package_files = {
+            path.relative_to(package_root).as_posix()
+            for path in package_root.rglob("*")
+            if path.is_file() and path.name != "signature.json"
+        }
+        if signed_files != package_files:
+            missing = sorted(package_files - signed_files)
+            extra = sorted(signed_files - package_files)
+            detail = missing or extra
+            raise SkillSecurityError(
+                "Skill 签名文件清单不完整: %s" % ", ".join(detail)
+            )
         return dict(sorted(normalized.items()))
 
     @staticmethod
