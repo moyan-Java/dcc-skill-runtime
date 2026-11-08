@@ -68,3 +68,4 @@ SkillSigner.sign_package(
 
 仓库内提供了一个示例 Skill：`skills/maya.scene.plan`。签名后可以把它安装到
 `%LOCALAPPDATA%\DccHost\skills`，它会复用 Maya 插件已有的受限计划校验和事务应用逻辑。
+示例 `skill.yaml` 使用 YAML 兼容的 JSON 写法，保证 Maya 插件侧不必额外安装 YAML 解析库。
