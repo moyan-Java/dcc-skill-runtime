@@ -60,6 +60,13 @@ Skill 可以在 `skill.yaml` 中声明顶层参数。Runtime 和 Maya 插件都�
 Runtime 不在自己的 Python 进程执行 Maya API。它只把已校验的 Skill 请求发送给
 Host Service，再由 Maya 插件按请求动态加载 Skill。
 
+## MCP 工具
+
+Runtime 使用本地 Streamable HTTP 提供固定工具。Agent 通常先调用
+`session_open(project_id, host_id)` 创建会话，再调用 `skill_list`、`host_list`、
+`skill_describe` 和 `skill_run`；运行中的任务通过 `run_status` 查询，尚未开始的任务可用
+`run_cancel` 取消，知识内容通过 `knowledge_search` 查询。
+
 ## 开发签名
 
 开发者不要把私钥提交到仓库。可以使用 `SkillSigner` 生成本地私钥、信任配置和

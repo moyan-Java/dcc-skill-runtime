@@ -50,6 +50,7 @@ class McpServerTests(unittest.TestCase):
                     "skill_list",
                     "skill_describe",
                     "host_list",
+                    "session_open",
                     "skill_run",
                     "run_status",
                     "run_cancel",
@@ -90,6 +91,18 @@ class McpServerTests(unittest.TestCase):
             self.assertEqual(result[0]["host_id"], "maya-001")
             self.assertEqual(result[0]["status"], "online")
             self.assertEqual(result[0]["capabilities"], ["plan.validate"])
+
+    def test_session_open_returns_session_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            server = _build_server(Path(temp))
+
+            result = server.session_open("project-a", "maya-001")
+            session = server.runtime.sessions.get_session(result["session_id"])
+
+            self.assertEqual(result["project_id"], "project-a")
+            self.assertEqual(result["host_id"], "maya-001")
+            self.assertEqual(session.project_id, "project-a")
+            self.assertEqual(session.host_id, "maya-001")
 
     def test_skill_describe_reads_signed_instructions_without_code(self):
         with tempfile.TemporaryDirectory() as temp:

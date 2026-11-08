@@ -78,6 +78,16 @@ class SkillRuntimeMcpServer:
 
         return [_host_message(host) for host in self.host_client.list_hosts()]
 
+    def session_open(self, project_id: str, host_id: Optional[str] = None) -> dict[str, object]:
+        """创建一个由 Runtime 管理的会话，返回后续调用需要的 session_id。"""
+
+        session = self.runtime.sessions.create_session(project_id, host_id)
+        return {
+            "session_id": session.session_id,
+            "project_id": session.project_id,
+            "host_id": session.host_id,
+        }
+
     def skill_run(
         self,
         session_id: str,
@@ -171,6 +181,11 @@ class SkillRuntimeMcpServer:
             self.host_list,
             name="host_list",
             description="列出当前 Host Service 已注册的 DCC 宿主。",
+        )
+        self.mcp.add_tool(
+            self.session_open,
+            name="session_open",
+            description="创建一个项目会话，返回 skill_run 需要的 session_id。",
         )
         self.mcp.add_tool(
             self.skill_run,
