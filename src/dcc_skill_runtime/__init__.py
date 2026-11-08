@@ -5,10 +5,12 @@ from .knowledge import KnowledgeIndex, OpenAICompatibleEmbedding
 from .models import (
     HostCallRequest,
     HostCallResponse,
+    HostInfo,
     SkillManifest,
     SkillPackage,
     SkillRunResult,
 )
+from .mcp_server import SkillRuntimeMcpServer, build_runtime_mcp_server
 from .runtime import SkillRuntime
 from .security import SkillSigner
 from .session import SessionStore
@@ -16,6 +18,7 @@ from .session import SessionStore
 __all__ = [
     "HostCallRequest",
     "HostCallResponse",
+    "HostInfo",
     "KnowledgeIndex",
     "OpenAICompatibleEmbedding",
     "SessionStore",
@@ -25,4 +28,6 @@ __all__ = [
     "SkillRunResult",
     "SkillRuntime",
     "SkillSigner",
+    "SkillRuntimeMcpServer",
+    "build_runtime_mcp_server",
 ]

@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from websockets.sync.client import connect
 
-from .models import HostCallRequest, HostCallResponse
+from .models import HostCallRequest, HostCallResponse, HostInfo
 
 
 class HostTransportError(RuntimeError):
@@ -38,6 +39,30 @@ class HostWebSocketClient:
                 "confirm": request.confirm,
             },
         }
+        response = self._send(message)
+        return _parse_response(response)
+
+    def list_hosts(self) -> tuple[HostInfo, ...]:
+        """读取 Host Service 当前登记的宿主快照。"""
+
+        response = self._send(
+            {
+                "action": "host.list",
+                "request_id": "runtime-%s" % uuid4().hex,
+            }
+        )
+        if response.get("status") != "success":
+            error = response.get("error")
+            message = error.get("message") if isinstance(error, dict) else "宿主列表读取失败"
+            raise HostTransportError(message)
+        raw_hosts = response.get("hosts")
+        if not isinstance(raw_hosts, list):
+            raise HostTransportError("Host Service 宿主列表格式无效")
+        return tuple(_parse_host(item) for item in raw_hosts)
+
+    def _send(self, message: Mapping[str, Any]) -> dict[str, Any]:
+        """在 Host Service JSON 边界完成一次请求和响应解析。"""
+
         try:
             with self._connection_factory(
                 self.service_url,
@@ -52,7 +77,9 @@ class HostWebSocketClient:
             response = json.loads(raw_response)
         except (TypeError, ValueError) as exc:
             raise HostTransportError("Host Service 返回了无效 JSON") from exc
-        return _parse_response(response)
+        if not isinstance(response, dict):
+            raise HostTransportError("Host Service 响应必须是对象")
+        return response
 
 
 def _parse_response(value: Any) -> HostCallResponse:
@@ -83,6 +110,37 @@ def _parse_response(value: Any) -> HostCallResponse:
         result=result,
         error_code=error.get("code") if isinstance(error, dict) else None,
         error_message=error.get("message") if isinstance(error, dict) else None,
+    )
+
+
+def _parse_host(value: Any) -> HostInfo:
+    """把 Host Service 宿主 JSON 转成 Runtime 内部对象。"""
+
+    if not isinstance(value, dict):
+        raise HostTransportError("Host Service 宿主信息格式无效")
+    host_id = value.get("host_id")
+    host_type = value.get("host_type")
+    endpoint = value.get("endpoint")
+    capabilities = value.get("capabilities", [])
+    status = value.get("status")
+    last_seen = value.get("last_seen")
+    if (
+        not isinstance(host_id, str)
+        or not isinstance(host_type, str)
+        or not isinstance(endpoint, str)
+        or not isinstance(capabilities, list)
+        or not all(isinstance(item, str) for item in capabilities)
+        or not isinstance(status, str)
+        or not isinstance(last_seen, (int, float))
+    ):
+        raise HostTransportError("Host Service 宿主信息字段无效")
+    return HostInfo(
+        host_id=host_id,
+        host_type=host_type,
+        endpoint=endpoint,
+        capabilities=tuple(capabilities),
+        status=status,
+        last_seen=float(last_seen),
     )
 
 

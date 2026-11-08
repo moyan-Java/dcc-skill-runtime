@@ -206,6 +206,45 @@ class RuntimeTests(unittest.TestCase):
         )
         self.assertEqual(response.result, {"created": 2})
 
+    def test_transport_parses_host_list_into_explicit_objects(self):
+        class Socket:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def send(self, _message):
+                return None
+
+            def recv(self, timeout=None):
+                return json.dumps(
+                    {
+                        "status": "success",
+                        "action": "host.list",
+                        "hosts": [
+                            {
+                                "host_id": "maya-001",
+                                "host_type": "maya",
+                                "endpoint": "pipe://maya-001",
+                                "capabilities": ["plan.validate"],
+                                "status": "online",
+                                "last_seen": 100,
+                            }
+                        ],
+                    }
+                )
+
+        client = HostWebSocketClient(
+            "ws://127.0.0.1:8890",
+            connection_factory=lambda *_args, **_kwargs: Socket(),
+        )
+
+        hosts = client.list_hosts()
+
+        self.assertEqual(hosts[0].host_id, "maya-001")
+        self.assertEqual(hosts[0].capabilities, ("plan.validate",))
+
 
 def _create_signed_skill(base: Path, mutates_scene: bool = False):
     root = base / "maya.scene.plan"

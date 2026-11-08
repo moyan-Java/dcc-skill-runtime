@@ -53,6 +53,18 @@ class HostCallRequest:
 
 
 @dataclass(frozen=True)
+class HostInfo:
+    """Host Service 返回的宿主快照。"""
+
+    host_id: str
+    host_type: str
+    endpoint: str
+    capabilities: Tuple[str, ...]
+    status: str
+    last_seen: float
+
+
+@dataclass(frozen=True)
 class HostCallResponse:
     """Host Service 返回的协议响应。"""
 
