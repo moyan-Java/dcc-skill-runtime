@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import yaml
 
 from dcc_skill_runtime.catalog import SkillCatalog, SkillCatalogError
 from dcc_skill_runtime.knowledge import KnowledgeIndex
-from dcc_skill_runtime.models import HostCallRequest, HostCallResponse
+from dcc_skill_runtime.models import HostCallRequest, HostCallResponse, HostInfo
 from dcc_skill_runtime.runtime import SkillRuntime, SkillRuntimeError
 from dcc_skill_runtime.security import SkillSecurityError, SkillSignature, SkillSigner
 from dcc_skill_runtime.transport import HostWebSocketClient
@@ -25,9 +26,20 @@ class FakeEmbedding:
 class FakeHostClient:
     def __init__(self):
         self.requests = []
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.block = False
+
+    def list_hosts(self):
+        return (
+            HostInfo("maya-001", "maya", "pipe://maya-001", (), "online", 1.0),
+        )
 
     def call_skill(self, request):
         self.requests.append(request)
+        self.started.set()
+        if self.block:
+            self.release.wait(2.0)
         return HostCallResponse(
             status="success",
             action="skill.run",
@@ -151,6 +163,26 @@ class RuntimeTests(unittest.TestCase):
 
             with self.assertRaises(SkillRuntimeError):
                 runtime.run(session.session_id, "maya.scene.plan", "maya-001", {})
+
+    def test_runtime_submit_uses_queued_and_running_states(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, keys = _create_signed_skill(Path(temp))
+            catalog = SkillCatalog(root.parent, keys)
+            sessions = SessionStore(Path(temp) / "session.db")
+            client = FakeHostClient()
+            client.block = True
+            runtime = SkillRuntime(catalog, sessions, client, worker_count=2)
+            runtime.start()
+            session = sessions.create_session("project-a", "maya-001")
+
+            run = runtime.submit(session.session_id, "maya.scene.plan", "maya-001", {})
+
+            self.assertEqual(run.status, "queued")
+            self.assertTrue(client.started.wait(1.0))
+            self.assertEqual(sessions.get_run(run.run_id).status, "running")
+            client.release.set()
+            runtime.stop()
+            self.assertEqual(sessions.get_run(run.run_id).status, "success")
 
     def test_signer_generates_package_signature(self):
         with tempfile.TemporaryDirectory() as temp:

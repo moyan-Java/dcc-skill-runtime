@@ -32,6 +32,19 @@ class RunRecord:
     status: str
 
 
+@dataclass(frozen=True)
+class RunSnapshot:
+    """供状态查询使用的一次运行快照。"""
+
+    run_id: str
+    session_id: str
+    skill_id: str
+    status: str
+    result: Optional[Mapping[str, Any]] = None
+    error_code: str = ""
+    error_message: str = ""
+
+
 class SessionStore:
     """保存 AI 会话，不把会话状态放入 Host Service。"""
 
@@ -92,6 +105,48 @@ class SessionStore:
             )
         return RunRecord(run_id, session_id, skill_id, "running")
 
+    def queue_run(
+        self,
+        session_id: str,
+        skill_id: str,
+        args: Mapping[str, Any],
+        approved: bool,
+    ) -> RunRecord:
+        """创建 queued 状态的运行，并拒绝同一会话的活动运行。"""
+
+        self.get_session(session_id)
+        run_id = uuid4().hex
+        with self._write_lock, self._connection() as connection:
+            active = connection.execute(
+                "SELECT 1 FROM runs WHERE session_id = ? AND status IN ('queued', 'running')",
+                (session_id,),
+            ).fetchone()
+            if active is not None:
+                raise SessionError("当前会话已有活动的 Skill")
+            connection.execute(
+                "INSERT INTO runs VALUES (?, ?, ?, 'queued', ?, ?, '', '', '', ?)",
+                (
+                    run_id,
+                    session_id,
+                    skill_id,
+                    json.dumps(args, ensure_ascii=False, sort_keys=True),
+                    int(approved),
+                    _now(),
+                ),
+            )
+        return RunRecord(run_id, session_id, skill_id, "queued")
+
+    def mark_running(self, run_id: str) -> bool:
+        """把 queued 运行原子地切换为 running；已取消时返回 False。"""
+
+        with self._write_lock, self._connection() as connection:
+            cursor = connection.execute(
+                "UPDATE runs SET status = 'running', updated_at = ? "
+                "WHERE id = ? AND status = 'queued'",
+                (_now(), run_id),
+            )
+        return cursor.rowcount == 1
+
     def finish_run(
         self,
         run_id: str,
@@ -100,9 +155,9 @@ class SessionStore:
         error_code: str = "",
         error_message: str = "",
     ) -> None:
-        if status not in ("success", "failed"):
-            raise ValueError("运行状态必须是 success 或 failed")
-        with self._connection() as connection:
+        if status not in ("success", "failed", "cancelled"):
+            raise ValueError("运行状态必须是 success、failed 或 cancelled")
+        with self._write_lock, self._connection() as connection:
             connection.execute(
                 """
                 UPDATE runs
@@ -118,6 +173,41 @@ class SessionStore:
                     run_id,
                 ),
             )
+
+    def get_run(self, run_id: str) -> RunSnapshot:
+        """读取一次运行的持久化快照。"""
+
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT id, session_id, skill_id, status, result_json, error_code, error_message "
+                "FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise SessionError("运行记录不存在")
+        result = json.loads(row[4]) if row[4] else None
+        if result is not None and not isinstance(result, dict):
+            raise SessionError("运行结果格式无效")
+        return RunSnapshot(
+            run_id=row[0],
+            session_id=row[1],
+            skill_id=row[2],
+            status=row[3],
+            result=result,
+            error_code=row[5],
+            error_message=row[6],
+        )
+
+    def cancel_queued(self, run_id: str) -> bool:
+        """只取消尚未进入宿主调用的 queued 运行。"""
+
+        with self._write_lock, self._connection() as connection:
+            cursor = connection.execute(
+                "UPDATE runs SET status = 'cancelled', updated_at = ? "
+                "WHERE id = ? AND status = 'queued'",
+                (_now(), run_id),
+            )
+        return cursor.rowcount == 1
 
     def add_message(self, session_id: str, run_id: str, role: str, content: str) -> None:
         self.get_session(session_id)

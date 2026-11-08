@@ -58,6 +58,32 @@ class SkillRuntimeMcpServer:
 
         return [_host_message(host) for host in self.host_client.list_hosts()]
 
+    def skill_run(
+        self,
+        session_id: str,
+        project_id: str,
+        host_id: str,
+        skill_id: str,
+        args: dict[str, Any],
+    ) -> dict[str, object]:
+        """提交一次受信任 Skill 运行，并立即返回 queued 状态。"""
+
+        session = self.runtime.sessions.get_session(session_id)
+        if session.project_id != project_id:
+            raise ValueError("session_id 不属于指定 project_id")
+        run = self.runtime.submit(
+            session_id=session_id,
+            skill_id=skill_id,
+            host_id=host_id,
+            args=args,
+            confirm=True,
+        )
+        return {
+            "run_id": run.run_id,
+            "status": run.status,
+            "skill_id": run.skill_id,
+        }
+
     def run(self, transport: str = "streamable-http") -> None:
         """启动 MCP Server；默认使用本地 Streamable HTTP。"""
 
@@ -80,6 +106,11 @@ class SkillRuntimeMcpServer:
             self.host_list,
             name="host_list",
             description="列出当前 Host Service 已注册的 DCC 宿主。",
+        )
+        self.mcp.add_tool(
+            self.skill_run,
+            name="skill_run",
+            description="提交一次已签名 Skill 运行并返回 run_id。",
         )
 
     def _register_resources(self) -> None:

@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from dcc_skill_runtime.catalog import SkillCatalog
 from dcc_skill_runtime.mcp_server import SkillRuntimeMcpServer
-from dcc_skill_runtime.models import HostInfo
+from dcc_skill_runtime.models import HostCallResponse, HostInfo
 from dcc_skill_runtime.runtime import SkillRuntime
 from dcc_skill_runtime.security import SkillSignature
 from dcc_skill_runtime.session import SessionStore
@@ -30,6 +30,9 @@ class FakeHostClient:
             ),
         )
 
+    def call_skill(self, request):
+        return HostCallResponse("success", "skill.run", request.run_id, {"created": 1})
+
 
 class McpServerTests(unittest.TestCase):
     def test_registers_stable_read_only_tools(self):
@@ -40,7 +43,7 @@ class McpServerTests(unittest.TestCase):
 
             self.assertEqual(
                 {tool.name for tool in tools},
-                {"skill_list", "skill_describe", "host_list"},
+                {"skill_list", "skill_describe", "host_list", "skill_run"},
             )
 
     def test_skill_list_only_returns_index_metadata(self):
@@ -90,6 +93,29 @@ class McpServerTests(unittest.TestCase):
             self.assertIn("Maya plan skill", result["instructions"])
             self.assertEqual(result["entry"], {"module": "code.entry", "function": "run"})
             self.assertNotIn("code", result)
+
+    def test_skill_run_returns_queued_run_id(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, trusted_keys = _create_signed_skill(Path(temp))
+            catalog = SkillCatalog(root.parent, trusted_keys)
+            sessions = SessionStore(Path(temp) / "session.db")
+            client = FakeHostClient()
+            runtime = SkillRuntime(catalog, sessions, client)
+            runtime.start()
+            session = sessions.create_session("project-a", "maya-001")
+            server = SkillRuntimeMcpServer(runtime, host_client=client)
+
+            result = server.skill_run(
+                session.session_id,
+                "project-a",
+                "maya-001",
+                "maya.scene.plan",
+                {"nodes": []},
+            )
+
+            self.assertEqual(result["status"], "queued")
+            self.assertTrue(result["run_id"])
+            runtime.stop()
 
     def test_resources_include_catalog_and_skill_template(self):
         with tempfile.TemporaryDirectory() as temp:

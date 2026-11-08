@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+import threading
 from typing import Any, Mapping, Optional
 
 from .catalog import SkillCatalog
 from .models import HostCallRequest, SkillManifest, SkillRunResult
-from .session import SessionStore
+from .session import RunRecord, SessionStore
 
 
 class SkillRuntimeError(RuntimeError):
@@ -38,18 +40,73 @@ class RuntimePaths:
 class SkillRuntime:
     """只编排 Skill，不在 Runtime 进程执行 Maya API。"""
 
-    def __init__(self, catalog: SkillCatalog, sessions: SessionStore, host_client: Any) -> None:
+    def __init__(
+        self,
+        catalog: SkillCatalog,
+        sessions: SessionStore,
+        host_client: Any,
+        worker_count: int = 4,
+    ) -> None:
+        if worker_count <= 0:
+            raise ValueError("worker_count 必须大于 0")
         self.catalog = catalog
         self.sessions = sessions
         self.host_client = host_client
+        self.worker_count = worker_count
         self._started = False
+        self._executor: Optional[ThreadPoolExecutor] = None
+        self._host_locks: dict[str, threading.Lock] = {}
+        self._host_locks_guard = threading.Lock()
 
     def start(self) -> tuple[SkillManifest, ...]:
         """建立常驻元数据索引。"""
 
         manifests = self.catalog.refresh()
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=self.worker_count,
+                thread_name_prefix="DccSkillRun",
+            )
         self._started = True
         return manifests
+
+    def stop(self) -> None:
+        """等待已提交的运行完成并关闭 Worker。"""
+
+        executor = self._executor
+        self._executor = None
+        self._started = False
+        if executor is not None:
+            executor.shutdown(wait=True)
+
+    def submit(
+        self,
+        session_id: str,
+        skill_id: str,
+        host_id: str,
+        args: Mapping[str, Any],
+        confirm: bool = False,
+        host_type: str = "maya",
+    ) -> RunRecord:
+        """校验 Skill 和宿主后，把一次运行放入后台队列。"""
+
+        self._ensure_started()
+        package = self.catalog.load(skill_id)
+        manifest = package.manifest
+        self._validate_host(host_id, host_type, manifest.hosts)
+        effective_confirm = bool(confirm or manifest.mutates_scene)
+        run = self.sessions.queue_run(session_id, skill_id, args, effective_confirm)
+        if self._executor is None:  # pragma: no cover - start() 已保证
+            raise SkillRuntimeError("Skill Runtime Worker 尚未启动")
+        self._executor.submit(
+            self._execute_queued,
+            run,
+            host_id,
+            args,
+            manifest,
+            effective_confirm,
+        )
+        return run
 
     def run(
         self,
@@ -101,6 +158,81 @@ class SkillRuntime:
             error_code=response.error_code or "skill_failed",
             error_message=response.error_message or "Skill 执行失败",
         )
+
+    def _execute_queued(
+        self,
+        run: RunRecord,
+        host_id: str,
+        args: Mapping[str, Any],
+        manifest: SkillManifest,
+        confirm: bool,
+    ) -> None:
+        if not self.sessions.mark_running(run.run_id):
+            return
+        request = HostCallRequest(
+            host_id=host_id,
+            skill_id=run.skill_id,
+            entry=manifest.entry.function,
+            run_id=run.run_id,
+            args=args,
+            confirm=confirm,
+        )
+        with self._host_lock(host_id):
+            try:
+                response = self.host_client.call_skill(request)
+            except Exception as exc:
+                self.sessions.finish_run(
+                    run.run_id,
+                    "failed",
+                    error_code="host_transport_failed",
+                    error_message=str(exc),
+                )
+                return
+            if response.succeeded:
+                self.sessions.finish_run(run.run_id, "success", result=response.result)
+                return
+            self.sessions.finish_run(
+                run.run_id,
+                "failed",
+                error_code=response.error_code or "skill_failed",
+                error_message=response.error_message or "Skill 执行失败",
+            )
+
+    def _validate_host(
+        self,
+        host_id: str,
+        host_type: str,
+        supported_hosts: tuple[str, ...],
+    ) -> None:
+        if not host_id.strip():
+            raise SkillRuntimeError("host_id 不能为空")
+        try:
+            hosts = self.host_client.list_hosts()
+        except Exception as exc:
+            raise SkillRuntimeError("无法读取 Host Service 宿主列表") from exc
+        for host in hosts:
+            if host.host_id != host_id:
+                continue
+            if host.status != "online":
+                raise SkillRuntimeError("宿主当前不在线: %s" % host_id)
+            if host.host_type != host_type:
+                raise SkillRuntimeError("宿主类型不匹配: %s" % host_id)
+            if host.host_type not in supported_hosts:
+                raise SkillRuntimeError("Skill 不支持宿主类型: %s" % host.host_type)
+            return
+        raise SkillRuntimeError("未知宿主: %s" % host_id)
+
+    def _host_lock(self, host_id: str) -> threading.Lock:
+        with self._host_locks_guard:
+            lock = self._host_locks.get(host_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._host_locks[host_id] = lock
+            return lock
+
+    def _ensure_started(self) -> None:
+        if not self._started:
+            raise SkillRuntimeError("Skill Runtime 尚未启动")
 
 
 def _local_app_data() -> str:
