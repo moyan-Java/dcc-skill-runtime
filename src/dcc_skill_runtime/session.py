@@ -1,0 +1,177 @@
+"""Skill 会话、运行和确认记录的 SQLite 持久化。"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Mapping, Optional
+from uuid import uuid4
+
+
+class SessionError(RuntimeError):
+    """会话状态不允许当前操作。"""
+
+
+@dataclass(frozen=True)
+class SessionRecord:
+    session_id: str
+    project_id: str
+    host_id: Optional[str]
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    run_id: str
+    session_id: str
+    skill_id: str
+    status: str
+
+
+class SessionStore:
+    """保存 AI 会话，不把会话状态放入 Host Service。"""
+
+    def __init__(self, database_path: Path) -> None:
+        self.database_path = Path(database_path)
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_lock = threading.Lock()
+        self._create_tables()
+
+    def create_session(self, project_id: str, host_id: Optional[str] = None) -> SessionRecord:
+        if not project_id.strip():
+            raise ValueError("project_id 不能为空")
+        session_id = uuid4().hex
+        now = _now()
+        with self._connection() as connection:
+            connection.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?, ?)",
+                (session_id, project_id, host_id, now),
+            )
+        return SessionRecord(session_id, project_id, host_id)
+
+    def get_session(self, session_id: str) -> SessionRecord:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT id, project_id, host_id FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            raise SessionError("会话不存在")
+        return SessionRecord(row[0], row[1], row[2])
+
+    def start_run(
+        self,
+        session_id: str,
+        skill_id: str,
+        args: Mapping[str, Any],
+        approved: bool,
+    ) -> RunRecord:
+        self.get_session(session_id)
+        run_id = uuid4().hex
+        with self._write_lock, self._connection() as connection:
+            active = connection.execute(
+                "SELECT 1 FROM runs WHERE session_id = ? AND status = 'running'",
+                (session_id,),
+            ).fetchone()
+            if active is not None:
+                raise SessionError("当前会话已有运行中的 Skill")
+            connection.execute(
+                "INSERT INTO runs VALUES (?, ?, ?, 'running', ?, ?, '', '', '', ?)",
+                (
+                    run_id,
+                    session_id,
+                    skill_id,
+                    json.dumps(args, ensure_ascii=False, sort_keys=True),
+                    int(approved),
+                    _now(),
+                ),
+            )
+        return RunRecord(run_id, session_id, skill_id, "running")
+
+    def finish_run(
+        self,
+        run_id: str,
+        status: str,
+        result: Optional[Mapping[str, Any]] = None,
+        error_code: str = "",
+        error_message: str = "",
+    ) -> None:
+        if status not in ("success", "failed"):
+            raise ValueError("运行状态必须是 success 或 failed")
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE runs
+                SET status = ?, result_json = ?, error_code = ?, error_message = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    json.dumps(result, ensure_ascii=False) if result is not None else "",
+                    error_code,
+                    error_message,
+                    _now(),
+                    run_id,
+                ),
+            )
+
+    def add_message(self, session_id: str, run_id: str, role: str, content: str) -> None:
+        self.get_session(session_id)
+        if role not in ("user", "assistant", "system"):
+            raise ValueError("消息角色无效")
+        with self._connection() as connection:
+            connection.execute(
+                "INSERT INTO messages(session_id, run_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                (session_id, run_id, role, content, _now()),
+            )
+
+    def _create_tables(self) -> None:
+        with self._connection() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    host_id TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS runs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    args_json TEXT NOT NULL,
+                    approved INTEGER NOT NULL,
+                    result_json TEXT NOT NULL,
+                    error_code TEXT NOT NULL,
+                    error_message TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+
+    @contextmanager
+    def _connection(self):
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            yield connection
+            connection.commit()
+        finally:
+            connection.close()
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
