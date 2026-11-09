@@ -24,7 +24,7 @@ from .transport import HostWebSocketClient
 
 
 class SkillRuntimeMcpServer:
-    """把 Runtime 的只读能力注册为稳定的 MCP Tools 和 Resources。"""
+    """把 Runtime 的对外能力收敛为少量稳定的 MCP 工具和资源。"""
 
     def __init__(
         self,
@@ -90,27 +90,30 @@ class SkillRuntimeMcpServer:
 
     def skill_run(
         self,
-        session_id: str,
         project_id: str,
         host_id: str,
         skill_id: str,
         args: dict[str, Any],
+        session_id: Optional[str] = None,
     ) -> dict[str, object]:
-        """提交一次受信任 Skill 运行，并立即返回 queued 状态。"""
+        """提交一个任务，必要时由 Runtime 自动创建项目会话。"""
 
-        session = self.runtime.sessions.get_session(session_id)
-        if session.project_id != project_id:
-            raise ValueError("session_id 不属于指定 project_id")
+        if session_id is None:
+            session = self.runtime.sessions.create_session(project_id, host_id)
+        else:
+            session = self.runtime.sessions.get_session(session_id)
+            if session.project_id != project_id:
+                raise ValueError("session_id 不属于指定 project_id")
         run = self.runtime.submit(
-            session_id=session_id,
+            session_id=session.session_id,
             skill_id=skill_id,
             host_id=host_id,
             args=args,
             confirm=True,
         )
         return {
-            "run_id": run.run_id,
-            "status": run.status,
+            "task_id": run.run_id,
+            "status": "accepted",
             "skill_id": run.skill_id,
         }
 
@@ -167,15 +170,12 @@ class SkillRuntimeMcpServer:
             self.runtime.stop()
 
     def _register_tools(self) -> None:
+        """只暴露 Agent 必需的入口，任务状态由 Runtime 内部维护。"""
+
         self.mcp.add_tool(
             self.skill_list,
             name="skill_list",
             description="列出已建立索引的 Skill 元数据。",
-        )
-        self.mcp.add_tool(
-            self.skill_describe,
-            name="skill_describe",
-            description="读取一个已签名 Skill 的说明和引用文档。",
         )
         self.mcp.add_tool(
             self.host_list,
@@ -183,29 +183,9 @@ class SkillRuntimeMcpServer:
             description="列出当前 Host Service 已注册的 DCC 宿主。",
         )
         self.mcp.add_tool(
-            self.session_open,
-            name="session_open",
-            description="创建一个项目会话，返回 skill_run 需要的 session_id。",
-        )
-        self.mcp.add_tool(
             self.skill_run,
             name="skill_run",
-            description="提交一次已签名 Skill 运行并返回 run_id。",
-        )
-        self.mcp.add_tool(
-            self.run_status,
-            name="run_status",
-            description="读取一次 Skill 运行的状态和结果。",
-        )
-        self.mcp.add_tool(
-            self.run_cancel,
-            name="run_cancel",
-            description="取消尚未开始宿主调用的 Skill 运行。",
-        )
-        self.mcp.add_tool(
-            self.knowledge_search,
-            name="knowledge_search",
-            description="检索本地知识库并返回带来源的片段。",
+            description="提交一次已签名 Skill 任务并返回任务编号。",
         )
 
     def _register_resources(self) -> None:

@@ -61,7 +61,7 @@ class McpServerTests(unittest.TestCase):
             self.assertEqual(paths.runtime_token, token_path)
             fake_server.run.assert_called_once_with()
 
-    def test_registers_stable_read_only_tools(self):
+    def test_registers_small_agent_tool_surface(self):
         with tempfile.TemporaryDirectory() as temp:
             server = _build_server(Path(temp))
 
@@ -71,13 +71,8 @@ class McpServerTests(unittest.TestCase):
                 {tool.name for tool in tools},
                 {
                     "skill_list",
-                    "skill_describe",
                     "host_list",
-                    "session_open",
                     "skill_run",
-                    "run_status",
-                    "run_cancel",
-                    "knowledge_search",
                 },
             )
 
@@ -142,7 +137,7 @@ class McpServerTests(unittest.TestCase):
             self.assertEqual(result["args"]["required"], ["plan"])
             self.assertNotIn("code", result)
 
-    def test_skill_run_returns_queued_run_id(self):
+    def test_skill_run_creates_session_and_returns_task_id(self):
         with tempfile.TemporaryDirectory() as temp:
             root, trusted_keys = _create_signed_skill(Path(temp))
             catalog = SkillCatalog(root.parent, trusted_keys)
@@ -150,19 +145,17 @@ class McpServerTests(unittest.TestCase):
             client = FakeHostClient()
             runtime = SkillRuntime(catalog, sessions, client)
             runtime.start()
-            session = sessions.create_session("project-a", "maya-001")
             server = SkillRuntimeMcpServer(runtime, host_client=client)
 
             result = server.skill_run(
-                session.session_id,
                 "project-a",
                 "maya-001",
                 "maya.scene.plan",
                 {"plan": {}},
             )
 
-            self.assertEqual(result["status"], "queued")
-            self.assertTrue(result["run_id"])
+            self.assertEqual(result["status"], "accepted")
+            self.assertTrue(result["task_id"])
             runtime.stop()
 
     def test_resources_include_catalog_and_skill_template(self):

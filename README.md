@@ -63,9 +63,15 @@ Host Service，再由 Maya 插件按请求动态加载 Skill。
 ## MCP 工具
 
 Runtime 使用本地 Streamable HTTP 提供固定工具。Agent 通常先调用
-`session_open(project_id, host_id)` 创建会话，再调用 `skill_list`、`host_list`、
-`skill_describe` 和 `skill_run`；运行中的任务通过 `run_status` 查询，尚未开始的任务可用
-`run_cancel` 取消，知识内容通过 `knowledge_search` 查询。
+MCP 只向 Agent 暴露三个稳定入口：
+
+- `skill_list`：查看已安装 Skill 的元数据；
+- `host_list`：查看当前在线的 DCC 宿主；
+- `skill_run`：提交一个 Skill 任务并返回 `task_id`。
+
+会话、排队、运行、超时、取消和结果状态由 Runtime 的任务表维护，不要求 Agent 轮询状态。
+Skill 的详细说明仍通过 `skill://{skill_id}` 只读资源读取；任务状态查询和取消保留为
+Runtime 内部能力，后续再根据实际需要提供管理入口。
 
 ## 开发签名
 
