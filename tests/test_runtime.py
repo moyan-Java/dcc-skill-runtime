@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import yaml
@@ -396,6 +397,35 @@ class RuntimeTests(unittest.TestCase):
             client.release.set()
             runtime.stop()
             self.assertEqual(sessions.get_run(run.run_id).status, "success")
+
+    def test_runtime_submit_failure_finishes_queued_record(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, keys = _create_signed_skill(Path(temp))
+            catalog = SkillCatalog(root.parent, keys)
+            sessions = SessionStore(Path(temp) / "session.db")
+            runtime = SkillRuntime(catalog, sessions, FakeHostClient())
+            runtime.start()
+            session = sessions.create_session("project-a", "maya-001")
+
+            with mock.patch.object(
+                runtime._executor,
+                "submit",
+                side_effect=RuntimeError("executor closed"),
+            ):
+                with self.assertRaisesRegex(SkillRuntimeError, "提交任务失败"):
+                    runtime.submit(session.session_id, "maya.scene.plan", "maya-001", {})
+
+            connection = sqlite3.connect(Path(temp) / "session.db")
+            run_id = connection.execute(
+                "SELECT id FROM runs WHERE session_id = ?",
+                (session.session_id,),
+            ).fetchone()[0]
+            connection.close()
+            snapshot = sessions.get_run(run_id)
+            self.assertEqual(snapshot.status, "failed")
+            self.assertEqual(snapshot.error_code, "runtime_submit_failed")
+            self.assertIn("Runtime Worker 无法接收任务", snapshot.error_message)
+            runtime.stop()
 
     def test_runtime_serializes_same_host_and_runs_other_hosts_in_parallel(self):
         with tempfile.TemporaryDirectory() as temp:

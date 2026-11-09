@@ -110,14 +110,23 @@ class SkillRuntime:
         )
         if self._executor is None:  # pragma: no cover - start() 已保证
             raise SkillRuntimeError("Skill Runtime Worker 尚未启动")
-        self._executor.submit(
-            self._execute_queued,
-            run,
-            host_id,
-            args,
-            manifest,
-            effective_confirm,
-        )
+        try:
+            self._executor.submit(
+                self._execute_queued,
+                run,
+                host_id,
+                args,
+                manifest,
+                effective_confirm,
+            )
+        except Exception as exc:
+            self.sessions.finish_run(
+                run.run_id,
+                "failed",
+                error_code="runtime_submit_failed",
+                error_message="Runtime Worker 无法接收任务：%s" % exc,
+            )
+            raise SkillRuntimeError("Runtime Worker 提交任务失败") from exc
         return run
 
     def run(
