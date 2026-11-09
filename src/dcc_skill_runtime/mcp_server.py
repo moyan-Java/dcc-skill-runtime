@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import os
 from pathlib import Path
 import secrets
+import time
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -301,9 +303,32 @@ def _load_or_create_token(path: Path) -> str:
         if token:
             return token
     path.parent.mkdir(parents=True, exist_ok=True)
-    token = secrets.token_urlsafe(32)
-    path.write_text(token + "\n", encoding="ascii")
-    return token
+    for _ in range(10):
+        try:
+            handle = os.open(
+                str(path),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            )
+        except FileExistsError:
+            # 另一个 Runtime 可能刚创建文件但还没有写完，短暂等待后读取。
+            time.sleep(0.01)
+            token = path.read_text(encoding="ascii").strip()
+            if token:
+                return token
+            continue
+
+        token = secrets.token_urlsafe(32)
+        try:
+            with os.fdopen(handle, "w", encoding="ascii") as stream:
+                stream.write(token + "\n")
+        except Exception:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        return token
+    raise RuntimeError("MCP Runtime Token 文件无法稳定创建")
 
 
 def _load_trusted_keys(path: Path) -> dict[str, bytes]:

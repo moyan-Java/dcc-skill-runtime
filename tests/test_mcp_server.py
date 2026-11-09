@@ -12,7 +12,11 @@ from starlette.testclient import TestClient
 
 from dcc_skill_runtime.catalog import SkillCatalog
 from dcc_skill_runtime.knowledge import KnowledgeIndex
-from dcc_skill_runtime.mcp_server import SkillRuntimeMcpServer, main
+from dcc_skill_runtime.mcp_server import (
+    SkillRuntimeMcpServer,
+    _load_or_create_token,
+    main,
+)
 from dcc_skill_runtime.models import HostCallResponse, HostInfo
 from dcc_skill_runtime.runtime import SkillRuntime
 from dcc_skill_runtime.security import SkillSignature
@@ -294,6 +298,26 @@ class McpServerTests(unittest.TestCase):
                 )
                 self.assertEqual(valid.status_code, 200)
                 self.assertIn('"serverInfo"', valid.text)
+
+    def test_token_creation_keeps_existing_value(self):
+        with tempfile.TemporaryDirectory() as temp:
+            token_path = Path(temp) / "config" / "runtime-token"
+            token_path.parent.mkdir(parents=True)
+            token_path.write_text("stable-token\n", encoding="ascii")
+
+            self.assertEqual(_load_or_create_token(token_path), "stable-token")
+            self.assertEqual(token_path.read_text(encoding="ascii").strip(), "stable-token")
+
+    def test_concurrent_token_creation_returns_one_value(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with tempfile.TemporaryDirectory() as temp:
+            token_path = Path(temp) / "config" / "runtime-token"
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                tokens = list(executor.map(_load_or_create_token, [token_path, token_path]))
+
+            self.assertEqual(tokens[0], tokens[1])
+            self.assertEqual(token_path.read_text(encoding="ascii").strip(), tokens[0])
 
 
 def _build_server(temp: Path, knowledge=None) -> SkillRuntimeMcpServer:
