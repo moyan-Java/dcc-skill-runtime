@@ -118,11 +118,11 @@ class SessionStore:
         now = _now()
         with self._write_lock, self._connection() as connection:
             active = connection.execute(
-                "SELECT 1 FROM runs WHERE session_id = ? AND status = 'running'",
+                "SELECT 1 FROM runs WHERE session_id = ? AND status IN ('queued', 'running')",
                 (session_id,),
             ).fetchone()
             if active is not None:
-                raise SessionError("当前会话已有运行中的 Skill")
+                raise SessionError("当前会话已有活动的 Skill")
             connection.execute(
                 """
                 INSERT INTO runs(

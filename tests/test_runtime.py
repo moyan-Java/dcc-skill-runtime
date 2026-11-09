@@ -181,6 +181,15 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(SessionError):
                 store.start_run(session.session_id, "maya.scene.plan", {}, True)
 
+    def test_session_rejects_sync_run_when_queued_run_exists(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = SessionStore(Path(temp) / "session.db")
+            session = store.create_session("project-a", "maya-001")
+            store.queue_run(session.session_id, "maya.scene.plan", {}, True)
+
+            with self.assertRaisesRegex(SessionError, "已有活动的 Skill"):
+                store.start_run(session.session_id, "maya.scene.plan", {}, True)
+
     def test_session_recovers_queued_and_running_runs_after_runtime_restart(self):
         with tempfile.TemporaryDirectory() as temp:
             database = Path(temp) / "session.db"
