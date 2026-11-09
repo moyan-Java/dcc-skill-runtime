@@ -28,6 +28,8 @@ class SessionRecord:
 class RunRecord:
     run_id: str
     session_id: str
+    project_id: str
+    host_id: Optional[str]
     skill_id: str
     status: str
 
@@ -38,8 +40,12 @@ class RunSnapshot:
 
     run_id: str
     session_id: str
+    project_id: str
+    host_id: Optional[str]
     skill_id: str
     status: str
+    created_at: str
+    updated_at: str
     result: Optional[Mapping[str, Any]] = None
     error_code: str = ""
     error_message: str = ""
@@ -82,9 +88,11 @@ class SessionStore:
         skill_id: str,
         args: Mapping[str, Any],
         approved: bool,
+        host_id: Optional[str] = None,
     ) -> RunRecord:
-        self.get_session(session_id)
+        session = self.get_session(session_id)
         run_id = uuid4().hex
+        now = _now()
         with self._write_lock, self._connection() as connection:
             active = connection.execute(
                 "SELECT 1 FROM runs WHERE session_id = ? AND status = 'running'",
@@ -93,17 +101,33 @@ class SessionStore:
             if active is not None:
                 raise SessionError("当前会话已有运行中的 Skill")
             connection.execute(
-                "INSERT INTO runs VALUES (?, ?, ?, 'running', ?, ?, '', '', '', ?)",
+                """
+                INSERT INTO runs(
+                    id, session_id, project_id, host_id, skill_id, status,
+                    args_json, approved, result_json, error_code, error_message,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, '', '', '', ?, ?)
+                """,
                 (
                     run_id,
                     session_id,
+                    session.project_id,
+                    host_id or session.host_id,
                     skill_id,
                     json.dumps(args, ensure_ascii=False, sort_keys=True),
                     int(approved),
-                    _now(),
+                    now,
+                    now,
                 ),
             )
-        return RunRecord(run_id, session_id, skill_id, "running")
+        return RunRecord(
+            run_id,
+            session_id,
+            session.project_id,
+            host_id or session.host_id,
+            skill_id,
+            "running",
+        )
 
     def queue_run(
         self,
@@ -111,11 +135,13 @@ class SessionStore:
         skill_id: str,
         args: Mapping[str, Any],
         approved: bool,
+        host_id: Optional[str] = None,
     ) -> RunRecord:
         """创建 queued 状态的运行，并拒绝同一会话的活动运行。"""
 
-        self.get_session(session_id)
+        session = self.get_session(session_id)
         run_id = uuid4().hex
+        now = _now()
         with self._write_lock, self._connection() as connection:
             active = connection.execute(
                 "SELECT 1 FROM runs WHERE session_id = ? AND status IN ('queued', 'running')",
@@ -124,17 +150,33 @@ class SessionStore:
             if active is not None:
                 raise SessionError("当前会话已有活动的 Skill")
             connection.execute(
-                "INSERT INTO runs VALUES (?, ?, ?, 'queued', ?, ?, '', '', '', ?)",
+                """
+                INSERT INTO runs(
+                    id, session_id, project_id, host_id, skill_id, status,
+                    args_json, approved, result_json, error_code, error_message,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, '', '', '', ?, ?)
+                """,
                 (
                     run_id,
                     session_id,
+                    session.project_id,
+                    host_id or session.host_id,
                     skill_id,
                     json.dumps(args, ensure_ascii=False, sort_keys=True),
                     int(approved),
-                    _now(),
+                    now,
+                    now,
                 ),
             )
-        return RunRecord(run_id, session_id, skill_id, "queued")
+        return RunRecord(
+            run_id,
+            session_id,
+            session.project_id,
+            host_id or session.host_id,
+            skill_id,
+            "queued",
+        )
 
     def mark_running(self, run_id: str) -> bool:
         """把 queued 运行原子地切换为 running；已取消时返回 False。"""
@@ -179,23 +221,28 @@ class SessionStore:
 
         with self._connection() as connection:
             row = connection.execute(
-                "SELECT id, session_id, skill_id, status, result_json, error_code, error_message "
+                "SELECT id, session_id, project_id, host_id, skill_id, status, "
+                "created_at, updated_at, result_json, error_code, error_message "
                 "FROM runs WHERE id = ?",
                 (run_id,),
             ).fetchone()
         if row is None:
             raise SessionError("运行记录不存在")
-        result = json.loads(row[4]) if row[4] else None
+        result = json.loads(row[8]) if row[8] else None
         if result is not None and not isinstance(result, dict):
             raise SessionError("运行结果格式无效")
         return RunSnapshot(
             run_id=row[0],
             session_id=row[1],
-            skill_id=row[2],
-            status=row[3],
+            project_id=row[2],
+            host_id=row[3],
+            skill_id=row[4],
+            status=row[5],
+            created_at=row[6],
+            updated_at=row[7],
             result=result,
-            error_code=row[5],
-            error_message=row[6],
+            error_code=row[9],
+            error_message=row[10],
         )
 
     def cancel_queued(self, run_id: str) -> bool:
@@ -232,6 +279,8 @@ class SessionStore:
                 CREATE TABLE IF NOT EXISTS runs (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    host_id TEXT,
                     skill_id TEXT NOT NULL,
                     status TEXT NOT NULL,
                     args_json TEXT NOT NULL,
@@ -239,8 +288,11 @@ class SessionStore:
                     result_json TEXT NOT NULL,
                     error_code TEXT NOT NULL,
                     error_message TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS idx_runs_session_status
+                    ON runs(session_id, status);
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -251,6 +303,44 @@ class SessionStore:
                 );
                 """
             )
+            self._migrate_runs(connection)
+
+    @staticmethod
+    def _migrate_runs(connection: sqlite3.Connection) -> None:
+        """给旧任务表补齐项目、宿主和创建时间字段。"""
+
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        if "project_id" not in columns:
+            connection.execute(
+                "ALTER TABLE runs ADD COLUMN project_id TEXT NOT NULL DEFAULT ''"
+            )
+        if "host_id" not in columns:
+            connection.execute("ALTER TABLE runs ADD COLUMN host_id TEXT")
+        if "created_at" not in columns:
+            connection.execute(
+                "ALTER TABLE runs ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"
+            )
+        connection.execute(
+            """
+            UPDATE runs
+            SET project_id = COALESCE(
+                    NULLIF(project_id, ''),
+                    (SELECT project_id FROM sessions WHERE sessions.id = runs.session_id),
+                    ''
+                ),
+                host_id = COALESCE(
+                    host_id,
+                    (SELECT host_id FROM sessions WHERE sessions.id = runs.session_id)
+                ),
+                created_at = CASE
+                    WHEN created_at = '' THEN updated_at
+                    ELSE created_at
+                END
+            """
+        )
 
     @contextmanager
     def _connection(self):

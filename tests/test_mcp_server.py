@@ -189,6 +189,34 @@ class McpServerTests(unittest.TestCase):
             self.assertEqual(result["status"], "cancelled")
             runtime.stop()
 
+    def test_run_status_includes_project_host_and_lifecycle_context(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            sessions = SessionStore(temp_path / "session.db")
+            runtime = SkillRuntime(
+                SkillCatalog(temp_path / "skills"),
+                sessions,
+                FakeHostClient(),
+            )
+            runtime.start()
+            session = sessions.create_session("project-a", "maya-001")
+            run = sessions.queue_run(
+                session.session_id,
+                "maya.scene.plan",
+                {},
+                True,
+                host_id="maya-001",
+            )
+            server = SkillRuntimeMcpServer(runtime, host_client=FakeHostClient())
+
+            result = server.run_status(run.run_id)
+
+            self.assertEqual(result["project_id"], "project-a")
+            self.assertEqual(result["host_id"], "maya-001")
+            self.assertTrue(result["created_at"])
+            self.assertEqual(result["created_at"], result["updated_at"])
+            runtime.stop()
+
     def test_mcp_run_stops_runtime_when_server_exits(self):
         with tempfile.TemporaryDirectory() as temp:
             runtime = SkillRuntime(

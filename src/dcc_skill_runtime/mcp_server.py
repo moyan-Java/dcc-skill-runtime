@@ -355,8 +355,12 @@ def _run_message(run: Any) -> dict[str, object]:
     message: dict[str, object] = {
         "run_id": run.run_id,
         "session_id": run.session_id,
+        "project_id": run.project_id,
+        "host_id": run.host_id,
         "skill_id": run.skill_id,
         "status": run.status,
+        "created_at": run.created_at,
+        "updated_at": run.updated_at,
     }
     if run.result is not None:
         message["result"] = dict(run.result)

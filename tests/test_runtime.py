@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -178,6 +179,68 @@ class RuntimeTests(unittest.TestCase):
 
             with self.assertRaises(SessionError):
                 store.start_run(session.session_id, "maya.scene.plan", {}, True)
+
+    def test_run_snapshot_keeps_project_host_and_lifecycle_times(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = SessionStore(Path(temp) / "session.db")
+            session = store.create_session("project-a", "maya-001")
+
+            run = store.queue_run(
+                session.session_id,
+                "maya.scene.plan",
+                {},
+                True,
+                host_id="maya-002",
+            )
+            snapshot = store.get_run(run.run_id)
+
+            self.assertEqual(snapshot.project_id, "project-a")
+            self.assertEqual(snapshot.host_id, "maya-002")
+            self.assertEqual(snapshot.status, "queued")
+            self.assertTrue(snapshot.created_at)
+            self.assertEqual(snapshot.created_at, snapshot.updated_at)
+
+    def test_old_run_table_is_migrated_without_losing_status(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "session.db"
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    host_id TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE runs (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    args_json TEXT NOT NULL,
+                    approved INTEGER NOT NULL,
+                    result_json TEXT NOT NULL,
+                    error_code TEXT NOT NULL,
+                    error_message TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+            connection.execute(
+                "INSERT INTO sessions VALUES ('session-1', 'project-a', 'maya-001', '2026-01-01')"
+            )
+            connection.execute(
+                "INSERT INTO runs VALUES ('run-1', 'session-1', 'maya.scene.plan', 'success', '{}', 1, '{}', '', '', '2026-01-02')"
+            )
+            connection.commit()
+            connection.close()
+
+            snapshot = SessionStore(database).get_run("run-1")
+
+            self.assertEqual(snapshot.project_id, "project-a")
+            self.assertEqual(snapshot.host_id, "maya-001")
+            self.assertEqual(snapshot.created_at, "2026-01-02")
+            self.assertEqual(snapshot.status, "success")
 
     def test_knowledge_uses_keyword_and_vector_results(self):
         with tempfile.TemporaryDirectory() as temp:

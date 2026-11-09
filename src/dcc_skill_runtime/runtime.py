@@ -99,7 +99,13 @@ class SkillRuntime:
         self._validate_args(manifest, args)
         self._validate_host(host_id, host_type, manifest.hosts, manifest.requires)
         effective_confirm = bool(confirm or manifest.mutates_scene)
-        run = self.sessions.queue_run(session_id, skill_id, args, effective_confirm)
+        run = self.sessions.queue_run(
+            session_id,
+            skill_id,
+            args,
+            effective_confirm,
+            host_id=host_id,
+        )
         if self._executor is None:  # pragma: no cover - start() 已保证
             raise SkillRuntimeError("Skill Runtime Worker 尚未启动")
         self._executor.submit(
@@ -131,7 +137,13 @@ class SkillRuntime:
         if manifest.mutates_scene and not confirm:
             raise SkillRuntimeError("场景修改 Skill 需要用户确认")
 
-        run = self.sessions.start_run(session_id, skill_id, args, confirm)
+        run = self.sessions.start_run(
+            session_id,
+            skill_id,
+            args,
+            confirm,
+            host_id=host_id,
+        )
         request = HostCallRequest(
             host_id=host_id,
             skill_id=skill_id,
