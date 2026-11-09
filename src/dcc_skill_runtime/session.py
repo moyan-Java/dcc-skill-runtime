@@ -155,8 +155,8 @@ class SessionStore:
         error_code: str = "",
         error_message: str = "",
     ) -> None:
-        if status not in ("success", "failed", "cancelled"):
-            raise ValueError("运行状态必须是 success、failed 或 cancelled")
+        if status not in ("success", "failed", "timeout", "cancelled"):
+            raise ValueError("运行状态必须是 success、failed、timeout 或 cancelled")
         with self._write_lock, self._connection() as connection:
             connection.execute(
                 """

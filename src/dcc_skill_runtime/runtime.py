@@ -150,15 +150,16 @@ class SkillRuntime:
             self.sessions.finish_run(run.run_id, "success", result=response.result)
             return SkillRunResult(run.run_id, "success", skill_id, result=response.result)
 
+        status = "timeout" if response.error_code == "host_call_timeout" else "failed"
         self.sessions.finish_run(
             run.run_id,
-            "failed",
+            status,
             error_code=response.error_code or "skill_failed",
             error_message=response.error_message or "Skill 执行失败",
         )
         return SkillRunResult(
             run.run_id,
-            "failed",
+            status,
             skill_id,
             error_code=response.error_code or "skill_failed",
             error_message=response.error_message or "Skill 执行失败",
@@ -196,9 +197,10 @@ class SkillRuntime:
             if response.succeeded:
                 self.sessions.finish_run(run.run_id, "success", result=response.result)
                 return
+            status = "timeout" if response.error_code == "host_call_timeout" else "failed"
             self.sessions.finish_run(
                 run.run_id,
-                "failed",
+                status,
                 error_code=response.error_code or "skill_failed",
                 error_message=response.error_message or "Skill 执行失败",
             )

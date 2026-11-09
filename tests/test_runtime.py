@@ -221,6 +221,38 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(client.requests[0].skill_id, "maya.scene.plan")
             self.assertTrue(client.requests[0].confirm)
 
+    def test_runtime_records_host_timeout_as_terminal_timeout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, keys = _create_signed_skill(Path(temp))
+            catalog = SkillCatalog(root.parent, keys)
+            sessions = SessionStore(Path(temp) / "session.db")
+
+            class TimeoutHostClient(FakeHostClient):
+                def call_skill(self, request):
+                    return HostCallResponse(
+                        status="failed",
+                        action="skill.run",
+                        request_id=request.run_id,
+                        error_code="host_call_timeout",
+                        error_message="宿主调用超时",
+                    )
+
+            runtime = SkillRuntime(catalog, sessions, TimeoutHostClient())
+            runtime.start()
+            session = sessions.create_session("project-a", "maya-001")
+
+            result = runtime.run(
+                session.session_id,
+                "maya.scene.plan",
+                "maya-001",
+                {},
+                confirm=True,
+            )
+
+            self.assertEqual(result.status, "timeout")
+            self.assertEqual(sessions.get_run(result.run_id).status, "timeout")
+            runtime.stop()
+
     def test_runtime_requires_confirmation_for_mutating_skill(self):
         with tempfile.TemporaryDirectory() as temp:
             root, keys = _create_signed_skill(Path(temp), mutates_scene=True)
