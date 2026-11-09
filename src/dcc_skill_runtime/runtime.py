@@ -64,6 +64,8 @@ class SkillRuntime:
         """建立常驻元数据索引。"""
 
         manifests = self.catalog.refresh()
+        if not self._started:
+            self.sessions.recover_incomplete_runs()
         if self._executor is None:
             self._executor = ThreadPoolExecutor(
                 max_workers=self.worker_count,

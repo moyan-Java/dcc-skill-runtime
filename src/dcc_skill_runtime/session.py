@@ -72,6 +72,29 @@ class SessionStore:
             )
         return SessionRecord(session_id, project_id, host_id)
 
+    def recover_incomplete_runs(self) -> int:
+        """把上一次 Runtime 遗留的活动任务标记为失败。
+
+        Runtime 进程异常退出时，数据库无法知道宿主调用最终是否完成。
+        继续保留 ``queued`` 或 ``running`` 会让任务表长期显示假状态，
+        也会阻塞同一会话提交新任务，因此新 Runtime 启动时统一结束这些记录。
+        """
+
+        now = _now()
+        with self._write_lock, self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE runs
+                SET status = 'failed',
+                    error_code = 'runtime_restarted',
+                    error_message = ?,
+                    updated_at = ?
+                WHERE status IN ('queued', 'running')
+                """,
+                ("Runtime 重启后，未完成任务已终止", now),
+            )
+        return cursor.rowcount
+
     def get_session(self, session_id: str) -> SessionRecord:
         with self._connection() as connection:
             row = connection.execute(

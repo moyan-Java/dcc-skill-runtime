@@ -180,6 +180,34 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(SessionError):
                 store.start_run(session.session_id, "maya.scene.plan", {}, True)
 
+    def test_session_recovers_queued_and_running_runs_after_runtime_restart(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "session.db"
+            store = SessionStore(database)
+            queued_session = store.create_session("project-a", "maya-001")
+            running_session = store.create_session("project-a", "maya-002")
+            queued = store.queue_run(
+                queued_session.session_id,
+                "maya.scene.plan",
+                {},
+                True,
+            )
+            running = store.start_run(
+                running_session.session_id,
+                "maya.scene.plan",
+                {},
+                True,
+            )
+
+            recovered = SessionStore(database).recover_incomplete_runs()
+
+            self.assertEqual(recovered, 2)
+            for run_id in (queued.run_id, running.run_id):
+                snapshot = store.get_run(run_id)
+                self.assertEqual(snapshot.status, "failed")
+                self.assertEqual(snapshot.error_code, "runtime_restarted")
+                self.assertEqual(snapshot.error_message, "Runtime 重启后，未完成任务已终止")
+
     def test_run_snapshot_keeps_project_host_and_lifecycle_times(self):
         with tempfile.TemporaryDirectory() as temp:
             store = SessionStore(Path(temp) / "session.db")
@@ -283,6 +311,27 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(result.status, "success")
             self.assertEqual(client.requests[0].skill_id, "maya.scene.plan")
             self.assertTrue(client.requests[0].confirm)
+
+    def test_runtime_start_recovers_runs_left_by_previous_process(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, keys = _create_signed_skill(Path(temp))
+            catalog = SkillCatalog(root.parent, keys)
+            sessions = SessionStore(Path(temp) / "session.db")
+            session = sessions.create_session("project-a", "maya-001")
+            run = sessions.queue_run(
+                session.session_id,
+                "maya.scene.plan",
+                {},
+                True,
+            )
+            runtime = SkillRuntime(catalog, sessions, FakeHostClient())
+
+            runtime.start()
+
+            snapshot = sessions.get_run(run.run_id)
+            self.assertEqual(snapshot.status, "failed")
+            self.assertEqual(snapshot.error_code, "runtime_restarted")
+            runtime.stop()
 
     def test_runtime_records_host_timeout_as_terminal_timeout(self):
         with tempfile.TemporaryDirectory() as temp:
