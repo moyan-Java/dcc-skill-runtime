@@ -59,6 +59,9 @@ jobs:
           $version = python dev/release_version.py --base "${{ github.event.before }}" --head "${{ github.sha }}" --apply
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Build Runtime ZIP
+        shell: pwsh
+        run: .\dev\package-runtime.ps1
       - name: Commit version and tag
         if: steps.bump.outputs.version != 'no-release'
         shell: pwsh
@@ -71,3 +74,10 @@ jobs:
           git commit -m "chore(release): $env:VERSION [skip ci]"
           git tag "v$env:VERSION"
           git push origin HEAD:main "v$env:VERSION"
+      - name: Upload Runtime ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          name: dcc-skill-runtime-${{ github.sha }}
+          path: dist/runtime-package-*.zip
+          if-no-files-found: error
+          retention-days: 30
